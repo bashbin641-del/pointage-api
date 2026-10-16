@@ -1,5 +1,17 @@
 import { Controller, Get, Module } from '@nestjs/common';
 
+@Controller()
+class RootController {
+  @Get()
+  index() {
+    return {
+      service: 'pointage-api',
+      status: 'ok',
+      health: '/api/v1/health',
+    };
+  }
+}
+
 @Controller('health')
 class HealthController {
   @Get()
@@ -13,5 +25,5 @@ class HealthController {
   }
 }
 
-@Module({ controllers: [HealthController] })
+@Module({ controllers: [RootController, HealthController] })
 export class AppModule {}
