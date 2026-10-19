@@ -1,4 +1,5 @@
 import { Controller, Get, Module } from '@nestjs/common';
+import { InfrastructureService } from './infrastructure.service';
 
 @Controller()
 class RootController {
@@ -14,16 +15,24 @@ class RootController {
 
 @Controller('health')
 class HealthController {
+  constructor(private readonly infrastructure: InfrastructureService) {}
+
   @Get()
-  health() {
+  async health() {
+    const infrastructure = await this.infrastructure.health();
+
     return {
-      status: 'ok',
+      status: infrastructure.status,
       service: 'pointage-api',
       version: '0.1.0',
       timezone: 'Africa/Abidjan',
+      dependencies: infrastructure.dependencies,
     };
   }
 }
 
-@Module({ controllers: [RootController, HealthController] })
+@Module({
+  controllers: [RootController, HealthController],
+  providers: [InfrastructureService],
+})
 export class AppModule {}

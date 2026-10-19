@@ -22,7 +22,14 @@ describe('public HTTP routes', () => {
   it('exposes the documented health route', async () => {
     const response = await fetch(`${baseUrl}/api/v1/health`);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ status: 'ok', service: 'pointage-api' });
+    expect(await response.json()).toMatchObject({
+      status: 'degraded',
+      service: 'pointage-api',
+      dependencies: {
+        redis: 'not_configured',
+        supabase: 'not_configured',
+      },
+    });
   });
 
   it('keeps the root route outside the API prefix', async () => {
