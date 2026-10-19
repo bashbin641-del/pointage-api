@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import {
   ActivateTerminalDto,
   CreateEmployeeDto,
@@ -65,6 +65,14 @@ export class PointageController {
   @Post('admin/terminaux')
   createTerminal(@Headers('authorization') authorization: string | undefined, @Body() input: CreateTerminalDto) {
     return this.pointage.createTerminal(authorization, input);
+  }
+
+  @Post('admin/terminaux/:id/code-activation')
+  renewTerminalActivationCode(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) terminalId: string,
+  ) {
+    return this.pointage.renewTerminalActivationCode(authorization, terminalId);
   }
 
   @Post('terminaux/activation')

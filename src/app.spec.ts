@@ -60,4 +60,11 @@ describe('public HTTP routes', () => {
     });
     expect(response.status).toBe(400);
   });
+
+  it('protects terminal activation-code renewal', async () => {
+    const response = await fetch(`${baseUrl}/api/v1/admin/terminaux/00000000-0000-4000-8000-000000000000/code-activation`, {
+      method: 'POST',
+    });
+    expect(response.status).toBe(401);
+  });
 });

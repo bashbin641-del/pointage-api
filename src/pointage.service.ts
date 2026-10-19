@@ -201,7 +201,7 @@ export class PointageService {
     const { data, error } = await this.infrastructure
       .getSupabaseClient()
       .from('terminaux')
-      .select('id,name,active,last_seen_at,session_expires_at,sites(name)')
+      .select('id,name,active,last_seen_at,activation_expires_at,session_expires_at,sites(name)')
       .order('name');
     if (error) throw new InternalServerErrorException('TERMINAUX_INDISPONIBLES');
     return { items: data ?? [] };
@@ -209,8 +209,7 @@ export class PointageService {
 
   async createTerminal(authorization: string | undefined, input: CreateTerminalDto) {
     const identity = await this.auth.requireAdmin(authorization);
-    const code = randomBytes(6).toString('hex').toUpperCase();
-    const activationExpiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+    const { code, activationExpiresAt } = this.newActivationCode();
     const { data, error } = await this.infrastructure
       .getSupabaseClient()
       .from('terminaux')
@@ -224,6 +223,29 @@ export class PointageService {
       .single();
     if (error || !data) throw new BadRequestException('CREATION_TERMINAL_ECHOUEE');
     await this.audit(identity.user.id, 'terminal.created', 'terminal', data.id, { siteId: input.siteId });
+    return { terminal: data, activationCode: code, activationExpiresAt };
+  }
+
+  async renewTerminalActivationCode(authorization: string | undefined, terminalId: string) {
+    const identity = await this.auth.requireAdmin(authorization);
+    const { code, activationExpiresAt } = this.newActivationCode();
+    const { data, error } = await this.infrastructure
+      .getSupabaseClient()
+      .from('terminaux')
+      .update({
+        activation_code_hash: this.hash(code),
+        activation_expires_at: activationExpiresAt,
+        session_token_hash: null,
+        session_expires_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', terminalId)
+      .eq('active', true)
+      .select('id,name,active,last_seen_at,activation_expires_at,session_expires_at,sites(name)')
+      .maybeSingle();
+    if (error) throw new InternalServerErrorException('RENOUVELLEMENT_CODE_TERMINAL_ECHOUE');
+    if (!data) throw new NotFoundException('TERMINAL_INTROUVABLE');
+    await this.audit(identity.user.id, 'terminal.activation_code_renewed', 'terminal', terminalId, {});
     return { terminal: data, activationCode: code, activationExpiresAt };
   }
 
@@ -365,6 +387,13 @@ export class PointageService {
       target_id: targetId,
       details,
     });
+  }
+
+  private newActivationCode() {
+    return {
+      code: randomBytes(6).toString('hex').toUpperCase(),
+      activationExpiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+    };
   }
 
   private hash(value: string) {
