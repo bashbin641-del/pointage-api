@@ -69,7 +69,7 @@ export class InfrastructureService implements OnApplicationShutdown {
     }
   }
 
-  private async getRedisClient(): Promise<RedisClientType> {
+  async getRedisClient(): Promise<RedisClientType> {
     if (!this.redisClient) {
       this.redisClient = createClient({
         url: this.redisUrl,
@@ -89,7 +89,7 @@ export class InfrastructureService implements OnApplicationShutdown {
     return this.redisClient;
   }
 
-  private getSupabaseClient(): SupabaseClient {
+  getSupabaseClient(): SupabaseClient {
     if (!this.supabaseClient) {
       this.supabaseClient = createSupabaseClient(
         this.supabaseUrl as string,

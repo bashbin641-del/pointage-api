@@ -37,4 +37,27 @@ describe('public HTTP routes', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ health: '/api/v1/health' });
   });
+
+  it.each([
+    '/api/v1/moi',
+    '/api/v1/moi/pointages',
+    '/api/v1/admin/tableau-de-bord',
+    '/api/v1/admin/sites',
+    '/api/v1/admin/employes',
+    '/api/v1/admin/presences',
+    '/api/v1/admin/terminaux',
+    '/api/v1/terminaux/session',
+  ])('rejects unauthenticated access to %s', async (path) => {
+    const response = await fetch(`${baseUrl}${path}`);
+    expect(response.status).toBe(401);
+  });
+
+  it('validates terminal activation codes before accessing infrastructure', async () => {
+    const response = await fetch(`${baseUrl}/api/v1/terminaux/activation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'court' }),
+    });
+    expect(response.status).toBe(400);
+  });
 });

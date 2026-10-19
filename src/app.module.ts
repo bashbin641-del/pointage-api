@@ -1,5 +1,8 @@
 import { Controller, Get, Module } from '@nestjs/common';
 import { InfrastructureService } from './infrastructure.service';
+import { AuthService } from './auth.service';
+import { PointageController } from './pointage.controller';
+import { PointageService } from './pointage.service';
 
 @Controller()
 class RootController {
@@ -32,7 +35,7 @@ class HealthController {
 }
 
 @Module({
-  controllers: [RootController, HealthController],
-  providers: [InfrastructureService],
+  controllers: [RootController, HealthController, PointageController],
+  providers: [InfrastructureService, AuthService, PointageService],
 })
 export class AppModule {}
