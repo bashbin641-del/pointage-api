@@ -70,12 +70,16 @@ export class InfrastructureService implements OnApplicationShutdown {
   }
 
   async getRedisClient(): Promise<RedisClientType> {
+    if (!this.redisUrl) {
+      throw new Error('REDIS_URL_MISSING');
+    }
+
     if (!this.redisClient) {
       this.redisClient = createClient({
         url: this.redisUrl,
         socket: {
           connectTimeout: 5_000,
-          reconnectStrategy: (retries) => (retries >= 3 ? false : Math.min(retries * 100, 500)),
+          reconnectStrategy: (retries) => Math.min(100 * 2 ** retries, 5_000),
         },
       });
 

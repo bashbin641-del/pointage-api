@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Header, Headers, Param, ParseUUIDPipe, Post, Sse } from '@nestjs/common';
 import {
   ActivateTerminalDto,
   CreateEmployeeDto,
@@ -25,6 +25,24 @@ export class PointageController {
   @Post('moi/qr')
   createQr(@Headers('authorization') authorization?: string) {
     return this.pointage.createQr(authorization);
+  }
+
+  @Sse('events/moi')
+  @Header('Cache-Control', 'private, no-cache, no-transform')
+  employeeEvents(@Headers('authorization') authorization?: string) {
+    return this.pointage.employeeEvents(authorization);
+  }
+
+  @Sse('events/admin')
+  @Header('Cache-Control', 'private, no-cache, no-transform')
+  adminEvents(@Headers('authorization') authorization?: string) {
+    return this.pointage.adminEvents(authorization);
+  }
+
+  @Sse('events/terminal')
+  @Header('Cache-Control', 'private, no-cache, no-transform')
+  terminalEvents(@Headers('authorization') authorization?: string) {
+    return this.pointage.terminalEvents(authorization);
   }
 
   @Get('admin/tableau-de-bord')

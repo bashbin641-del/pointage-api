@@ -47,6 +47,9 @@ describe('public HTTP routes', () => {
     '/api/v1/admin/presences',
     '/api/v1/admin/terminaux',
     '/api/v1/terminaux/session',
+    '/api/v1/events/moi',
+    '/api/v1/events/admin',
+    '/api/v1/events/terminal',
   ])('rejects unauthenticated access to %s', async (path) => {
     const response = await fetch(`${baseUrl}${path}`);
     expect(response.status).toBe(401);

@@ -12,6 +12,7 @@ import {
 import { createHash, randomBytes } from 'node:crypto';
 import { AuthService } from './auth.service';
 import { InfrastructureService } from './infrastructure.service';
+import { RealtimeService } from './realtime.service';
 import type {
   ActivateTerminalDto,
   CreateEmployeeDto,
@@ -44,6 +45,7 @@ export class PointageService {
   constructor(
     private readonly infrastructure: InfrastructureService,
     private readonly auth: AuthService,
+    private readonly realtime: RealtimeService,
   ) {}
 
   async me(authorization?: string) {
@@ -93,6 +95,24 @@ export class PointageService {
     };
   }
 
+  async employeeEvents(authorization?: string) {
+    const identity = await this.auth.requireUser(authorization);
+    const employee = await this.employeeForUser(identity.user.id);
+    return this.realtime.stream((event) => event.employeeId === employee.id);
+  }
+
+  async adminEvents(authorization?: string) {
+    await this.auth.requireAdmin(authorization);
+    return this.realtime.stream(() => true);
+  }
+
+  async terminalEvents(authorization?: string) {
+    const terminal = await this.requireTerminal(authorization);
+    return this.realtime.stream(
+      (event) => event.type === 'terminal.session_revoked' && event.terminalId === terminal.id,
+    );
+  }
+
   async adminSummary(authorization?: string) {
     await this.auth.requireAdmin(authorization);
     const supabase = this.infrastructure.getSupabaseClient();
@@ -139,6 +159,7 @@ export class PointageService {
     if (error?.code === '23505') throw new ConflictException('SITE_DEJA_EXISTANT');
     if (error || !data) throw new BadRequestException('CREATION_SITE_ECHOUEE');
     await this.audit(identity.user.id, 'site.created', 'site', data.id, { name });
+    await this.realtime.publish({ type: 'site.created' });
     return { site: data };
   }
 
@@ -181,6 +202,7 @@ export class PointageService {
       throw new BadRequestException('CREATION_EMPLOYE_ECHOUEE');
     }
     await this.audit(identity.user.id, 'employee.created', 'employee', employee.id, { matricule });
+    await this.realtime.publish({ type: 'employee.created', employeeId: employee.id });
     return { employee, invitationTokenHash: invite.properties.hashed_token };
   }
 
@@ -223,6 +245,7 @@ export class PointageService {
       .single();
     if (error || !data) throw new BadRequestException('CREATION_TERMINAL_ECHOUEE');
     await this.audit(identity.user.id, 'terminal.created', 'terminal', data.id, { siteId: input.siteId });
+    await this.realtime.publish({ type: 'terminal.created', terminalId: data.id });
     return { terminal: data, activationCode: code, activationExpiresAt };
   }
 
@@ -246,6 +269,7 @@ export class PointageService {
     if (error) throw new InternalServerErrorException('RENOUVELLEMENT_CODE_TERMINAL_ECHOUE');
     if (!data) throw new NotFoundException('TERMINAL_INTROUVABLE');
     await this.audit(identity.user.id, 'terminal.activation_code_renewed', 'terminal', terminalId, {});
+    await this.realtime.publish({ type: 'terminal.session_revoked', terminalId });
     return { terminal: data, activationCode: code, activationExpiresAt };
   }
 
@@ -276,6 +300,7 @@ export class PointageService {
       })
       .eq('id', terminal.id);
     if (updateError) throw new InternalServerErrorException('ACTIVATION_TERMINAL_ECHOUEE');
+    await this.realtime.publish({ type: 'terminal.activated', terminalId: terminal.id });
     return {
       sessionToken,
       sessionExpiresAt,
@@ -336,6 +361,11 @@ export class PointageService {
       .single();
     if (error?.code === '23505') throw new ConflictException('POINTAGE_DEJA_TRAITE');
     if (error || !event) throw new InternalServerErrorException('POINTAGE_NON_CONFIRME');
+    await this.realtime.publish({
+      type: 'attendance.recorded',
+      employeeId: qr.employeeId,
+      terminalId: terminal.id,
+    });
     return { event };
   }
 

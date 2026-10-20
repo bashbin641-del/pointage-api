@@ -3,6 +3,7 @@ import { InfrastructureService } from './infrastructure.service';
 import { AuthService } from './auth.service';
 import { PointageController } from './pointage.controller';
 import { PointageService } from './pointage.service';
+import { RealtimeService } from './realtime.service';
 
 @Controller()
 class RootController {
@@ -36,6 +37,6 @@ class HealthController {
 
 @Module({
   controllers: [RootController, HealthController, PointageController],
-  providers: [InfrastructureService, AuthService, PointageService],
+  providers: [InfrastructureService, AuthService, RealtimeService, PointageService],
 })
 export class AppModule {}
