@@ -14,10 +14,16 @@ const realtimeChannel = 'pointage:events:v1';
 
 export type RealtimeEventType =
   | 'attendance.recorded'
+  | 'attendance.updated'
+  | 'attendance.deleted'
   | 'employee.created'
+  | 'employee.updated'
+  | 'employee.deleted'
   | 'site.created'
+  | 'site.deleted'
   | 'terminal.activated'
   | 'terminal.created'
+  | 'terminal.deleted'
   | 'terminal.session_revoked';
 
 export type RealtimeEvent = {

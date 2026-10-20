@@ -1,4 +1,15 @@
-import { IsEmail, IsNotEmpty, IsString, IsUUID, Length, MaxLength, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsIn,
+  IsISO8601,
+  IsNotEmpty,
+  IsString,
+  IsUUID,
+  Length,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class CreateSiteDto {
   @IsString()
@@ -41,6 +52,16 @@ export class ActivateTerminalDto {
   code!: string;
 }
 
+export class UpdateEmployeeStatusDto {
+  @IsBoolean()
+  active!: boolean;
+}
+
+export class UpdateAttendanceDto {
+  @IsISO8601({ strict: true })
+  occurredAt!: string;
+}
+
 export class ScanDto {
   @IsString()
   @IsNotEmpty()
@@ -49,4 +70,7 @@ export class ScanDto {
 
   @IsUUID()
   idempotencyKey!: string;
+
+  @IsIn(['entree', 'sortie'])
+  eventType!: 'entree' | 'sortie';
 }

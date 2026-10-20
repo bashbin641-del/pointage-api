@@ -1,10 +1,12 @@
-import { Body, Controller, Get, Header, Headers, Param, ParseUUIDPipe, Post, Sse } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, Headers, Param, ParseUUIDPipe, Patch, Post, Sse } from '@nestjs/common';
 import {
   ActivateTerminalDto,
   CreateEmployeeDto,
   CreateSiteDto,
   CreateTerminalDto,
   ScanDto,
+  UpdateAttendanceDto,
+  UpdateEmployeeStatusDto,
 } from './pointage.dto';
 import { PointageService } from './pointage.service';
 
@@ -60,6 +62,14 @@ export class PointageController {
     return this.pointage.createSite(authorization, input);
   }
 
+  @Delete('admin/sites/:id')
+  deleteSite(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) siteId: string,
+  ) {
+    return this.pointage.deleteSite(authorization, siteId);
+  }
+
   @Get('admin/employes')
   listEmployees(@Headers('authorization') authorization?: string) {
     return this.pointage.listEmployees(authorization);
@@ -70,9 +80,48 @@ export class PointageController {
     return this.pointage.createEmployee(authorization, input);
   }
 
+  @Patch('admin/employes/:id/status')
+  updateEmployeeStatus(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) employeeId: string,
+    @Body() input: UpdateEmployeeStatusDto,
+  ) {
+    return this.pointage.updateEmployeeStatus(authorization, employeeId, input);
+  }
+
+  @Delete('admin/employes/:id')
+  deleteEmployee(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) employeeId: string,
+  ) {
+    return this.pointage.deleteEmployee(authorization, employeeId);
+  }
+
   @Get('admin/presences')
   listAttendance(@Headers('authorization') authorization?: string) {
     return this.pointage.listAttendance(authorization);
+  }
+
+  @Patch('admin/presences/:id')
+  updateAttendance(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) attendanceId: string,
+    @Body() input: UpdateAttendanceDto,
+  ) {
+    return this.pointage.updateAttendance(authorization, attendanceId, input);
+  }
+
+  @Delete('admin/presences/:id')
+  deleteAttendance(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) attendanceId: string,
+  ) {
+    return this.pointage.deleteAttendance(authorization, attendanceId);
+  }
+
+  @Delete('admin/presences')
+  deleteAttendanceHistory(@Headers('authorization') authorization?: string) {
+    return this.pointage.deleteAttendanceHistory(authorization);
   }
 
   @Get('admin/terminaux')
@@ -83,6 +132,14 @@ export class PointageController {
   @Post('admin/terminaux')
   createTerminal(@Headers('authorization') authorization: string | undefined, @Body() input: CreateTerminalDto) {
     return this.pointage.createTerminal(authorization, input);
+  }
+
+  @Delete('admin/terminaux/:id')
+  deleteTerminal(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) terminalId: string,
+  ) {
+    return this.pointage.deleteTerminal(authorization, terminalId);
   }
 
   @Post('admin/terminaux/:id/code-activation')

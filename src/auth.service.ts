@@ -51,6 +51,15 @@ export class AuthService {
     return identity;
   }
 
+  async requireManager(authorization?: string): Promise<RequestIdentity> {
+    const identity = await this.requireAdmin(authorization);
+    const role = String(identity.user.app_metadata.inox_admin_role);
+    if (role !== 'owner' && role !== 'administrator') {
+      throw new ForbiddenException('GESTION_ADMIN_REQUISE');
+    }
+    return identity;
+  }
+
   private bearerToken(authorization?: string): string {
     const [scheme, token] = authorization?.split(' ') ?? [];
     if (scheme?.toLowerCase() !== 'bearer' || !token) {

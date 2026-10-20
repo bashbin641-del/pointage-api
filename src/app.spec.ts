@@ -70,4 +70,33 @@ describe('public HTTP routes', () => {
     });
     expect(response.status).toBe(401);
   });
+
+  it.each([
+    ['DELETE', '/api/v1/admin/sites/00000000-0000-4000-8000-000000000000', undefined],
+    ['PATCH', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/status', { active: false }],
+    ['DELETE', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000', undefined],
+    ['PATCH', '/api/v1/admin/presences/00000000-0000-4000-8000-000000000000', { occurredAt: '2026-10-20T08:00:00.000Z' }],
+    ['DELETE', '/api/v1/admin/presences/00000000-0000-4000-8000-000000000000', undefined],
+    ['DELETE', '/api/v1/admin/presences', undefined],
+    ['DELETE', '/api/v1/admin/terminaux/00000000-0000-4000-8000-000000000000', undefined],
+  ])('protects %s %s', async (method, path, body) => {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('requires an explicit attendance type for scans', async () => {
+    const response = await fetch(`${baseUrl}/api/v1/pointages/scanner`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        qrPayload: `inox-presence:v1:${'a'.repeat(32)}`,
+        idempotencyKey: '00000000-0000-4000-8000-000000000000',
+      }),
+    });
+    expect(response.status).toBe(400);
+  });
 });

@@ -19,6 +19,8 @@ import type {
   CreateSiteDto,
   CreateTerminalDto,
   ScanDto,
+  UpdateAttendanceDto,
+  UpdateEmployeeStatusDto,
 } from './pointage.dto';
 
 type EmployeeRow = {
@@ -163,6 +165,36 @@ export class PointageService {
     return { site: data };
   }
 
+  async deleteSite(authorization: string | undefined, siteId: string) {
+    const identity = await this.auth.requireManager(authorization);
+    const supabase = this.infrastructure.getSupabaseClient();
+    const { data: terminals, error: terminalError } = await supabase
+      .from('terminaux')
+      .select('id')
+      .eq('site_id', siteId);
+    if (terminalError) throw new InternalServerErrorException('SUPPRESSION_SITE_ECHOUEE');
+
+    const { data: site, error } = await supabase
+      .from('sites')
+      .delete()
+      .eq('id', siteId)
+      .select('id,name')
+      .maybeSingle();
+    if (error) throw new InternalServerErrorException('SUPPRESSION_SITE_ECHOUEE');
+    if (!site) throw new NotFoundException('SITE_INTROUVABLE');
+
+    await this.audit(identity.user.id, 'site.deleted', 'site', siteId, {
+      name: site.name,
+      terminalCount: terminals?.length ?? 0,
+    });
+    await Promise.all((terminals ?? []).map((terminal) => this.realtime.publish({
+      type: 'terminal.session_revoked',
+      terminalId: terminal.id,
+    })));
+    await this.realtime.publish({ type: 'site.deleted' });
+    return { deleted: true, siteId };
+  }
+
   async listEmployees(authorization?: string) {
     await this.auth.requireAdmin(authorization);
     const { data, error } = await this.infrastructure
@@ -206,6 +238,69 @@ export class PointageService {
     return { employee, invitationTokenHash: invite.properties.hashed_token };
   }
 
+  async updateEmployeeStatus(
+    authorization: string | undefined,
+    employeeId: string,
+    input: UpdateEmployeeStatusDto,
+  ) {
+    const identity = await this.auth.requireManager(authorization);
+    const supabase = this.infrastructure.getSupabaseClient();
+    const { data: current, error: lookupError } = await supabase
+      .from('employes')
+      .select('id,auth_user_id,matricule,display_name,active')
+      .eq('id', employeeId)
+      .maybeSingle();
+    if (lookupError) throw new InternalServerErrorException('MISE_A_JOUR_EMPLOYE_ECHOUEE');
+    if (!current) throw new NotFoundException('EMPLOYE_INTROUVABLE');
+    if (current.active === input.active) return { employee: current };
+
+    const { error: authError } = await supabase.auth.admin.updateUserById(current.auth_user_id, {
+      ban_duration: input.active ? 'none' : '876000h',
+    });
+    if (authError) throw new InternalServerErrorException('MISE_A_JOUR_ACCES_EMPLOYE_ECHOUEE');
+
+    const { data: employee, error } = await supabase
+      .from('employes')
+      .update({ active: input.active, updated_at: new Date().toISOString() })
+      .eq('id', employeeId)
+      .select('id,matricule,display_name,active,created_at,sites(name)')
+      .maybeSingle();
+    if (error || !employee) {
+      await supabase.auth.admin.updateUserById(current.auth_user_id, {
+        ban_duration: current.active ? 'none' : '876000h',
+      });
+      throw new InternalServerErrorException('MISE_A_JOUR_EMPLOYE_ECHOUEE');
+    }
+
+    await this.audit(identity.user.id, input.active ? 'employee.unblocked' : 'employee.blocked', 'employee', employeeId, {
+      matricule: current.matricule,
+    });
+    await this.realtime.publish({ type: 'employee.updated', employeeId });
+    return { employee };
+  }
+
+  async deleteEmployee(authorization: string | undefined, employeeId: string) {
+    const identity = await this.auth.requireManager(authorization);
+    const supabase = this.infrastructure.getSupabaseClient();
+    const { data: employee, error: lookupError } = await supabase
+      .from('employes')
+      .select('id,auth_user_id,matricule,display_name')
+      .eq('id', employeeId)
+      .maybeSingle();
+    if (lookupError) throw new InternalServerErrorException('SUPPRESSION_EMPLOYE_ECHOUEE');
+    if (!employee) throw new NotFoundException('EMPLOYE_INTROUVABLE');
+
+    const { error } = await supabase.auth.admin.deleteUser(employee.auth_user_id);
+    if (error) throw new InternalServerErrorException('SUPPRESSION_EMPLOYE_ECHOUEE');
+
+    await this.audit(identity.user.id, 'employee.deleted', 'employee', employeeId, {
+      matricule: employee.matricule,
+      displayName: employee.display_name,
+    });
+    await this.realtime.publish({ type: 'employee.deleted', employeeId });
+    return { deleted: true, employeeId };
+  }
+
   async listAttendance(authorization?: string) {
     await this.auth.requireAdmin(authorization);
     const { data, error } = await this.infrastructure
@@ -216,6 +311,81 @@ export class PointageService {
       .limit(100);
     if (error) throw new InternalServerErrorException('PRESENCES_INDISPONIBLES');
     return { items: data ?? [] };
+  }
+
+  async updateAttendance(
+    authorization: string | undefined,
+    attendanceId: string,
+    input: UpdateAttendanceDto,
+  ) {
+    const identity = await this.auth.requireManager(authorization);
+    const occurredAt = new Date(input.occurredAt);
+    if (Number.isNaN(occurredAt.getTime())) throw new BadRequestException('DATE_POINTAGE_INVALIDE');
+
+    const supabase = this.infrastructure.getSupabaseClient();
+    const { data: current, error: lookupError } = await supabase
+      .from('evenements_pointage')
+      .select('id,occurred_at,event_type,employe_id')
+      .eq('id', attendanceId)
+      .maybeSingle();
+    if (lookupError) throw new InternalServerErrorException('MODIFICATION_POINTAGE_ECHOUEE');
+    if (!current) throw new NotFoundException('POINTAGE_INTROUVABLE');
+
+    const { data: event, error } = await supabase
+      .from('evenements_pointage')
+      .update({ occurred_at: occurredAt.toISOString() })
+      .eq('id', attendanceId)
+      .select('id,event_type,occurred_at,employes(display_name,matricule),sites(name),terminaux(name)')
+      .maybeSingle();
+    this.throwAttendanceWriteError(error, 'MODIFICATION_POINTAGE_ECHOUEE');
+    if (!event) throw new NotFoundException('POINTAGE_INTROUVABLE');
+
+    await this.audit(identity.user.id, 'attendance.updated', 'attendance', attendanceId, {
+      previousOccurredAt: current.occurred_at,
+      occurredAt: event.occurred_at,
+      eventType: current.event_type,
+      employeeId: current.employe_id,
+    });
+    await this.realtime.publish({ type: 'attendance.updated', employeeId: current.employe_id });
+    return { event };
+  }
+
+  async deleteAttendance(authorization: string | undefined, attendanceId: string) {
+    const identity = await this.auth.requireManager(authorization);
+    const { data: event, error } = await this.infrastructure
+      .getSupabaseClient()
+      .from('evenements_pointage')
+      .delete()
+      .eq('id', attendanceId)
+      .select('id,event_type,occurred_at,employe_id')
+      .maybeSingle();
+    if (error) throw new InternalServerErrorException('SUPPRESSION_POINTAGE_ECHOUEE');
+    if (!event) throw new NotFoundException('POINTAGE_INTROUVABLE');
+
+    await this.audit(identity.user.id, 'attendance.deleted', 'attendance', attendanceId, {
+      eventType: event.event_type,
+      occurredAt: event.occurred_at,
+      employeeId: event.employe_id,
+    });
+    await this.realtime.publish({ type: 'attendance.deleted', employeeId: event.employe_id });
+    return { deleted: true, attendanceId };
+  }
+
+  async deleteAttendanceHistory(authorization?: string) {
+    const identity = await this.auth.requireManager(authorization);
+    const { data, error } = await this.infrastructure
+      .getSupabaseClient()
+      .from('evenements_pointage')
+      .delete()
+      .not('id', 'is', null)
+      .select('id');
+    if (error) throw new InternalServerErrorException('SUPPRESSION_HISTORIQUE_ECHOUEE');
+
+    await this.audit(identity.user.id, 'attendance.history_deleted', 'attendance', identity.user.id, {
+      deletedCount: data?.length ?? 0,
+    });
+    await this.realtime.publish({ type: 'attendance.deleted' });
+    return { deleted: true, deletedCount: data?.length ?? 0 };
   }
 
   async listTerminals(authorization?: string) {
@@ -247,6 +417,27 @@ export class PointageService {
     await this.audit(identity.user.id, 'terminal.created', 'terminal', data.id, { siteId: input.siteId });
     await this.realtime.publish({ type: 'terminal.created', terminalId: data.id });
     return { terminal: data, activationCode: code, activationExpiresAt };
+  }
+
+  async deleteTerminal(authorization: string | undefined, terminalId: string) {
+    const identity = await this.auth.requireManager(authorization);
+    const { data: terminal, error } = await this.infrastructure
+      .getSupabaseClient()
+      .from('terminaux')
+      .delete()
+      .eq('id', terminalId)
+      .select('id,name,site_id')
+      .maybeSingle();
+    if (error) throw new InternalServerErrorException('SUPPRESSION_TERMINAL_ECHOUEE');
+    if (!terminal) throw new NotFoundException('TERMINAL_INTROUVABLE');
+
+    await this.audit(identity.user.id, 'terminal.deleted', 'terminal', terminalId, {
+      name: terminal.name,
+      siteId: terminal.site_id,
+    });
+    await this.realtime.publish({ type: 'terminal.session_revoked', terminalId });
+    await this.realtime.publish({ type: 'terminal.deleted', terminalId });
+    return { deleted: true, terminalId };
   }
 
   async renewTerminalActivationCode(authorization: string | undefined, terminalId: string) {
@@ -337,14 +528,6 @@ export class PointageService {
       .eq('id', qr.employeeId)
       .maybeSingle();
     if (!employee?.active) throw new ForbiddenException('EMPLOYE_INACTIF');
-    const { data: last } = await supabase
-      .from('evenements_pointage')
-      .select('event_type')
-      .eq('employe_id', qr.employeeId)
-      .order('occurred_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    const eventType = last?.event_type === 'entree' ? 'sortie' : 'entree';
     const occurredAt = new Date().toISOString();
     const { data: event, error } = await supabase
       .from('evenements_pointage')
@@ -352,7 +535,7 @@ export class PointageService {
         employe_id: qr.employeeId,
         terminal_id: terminal.id,
         site_id: terminal.site_id,
-        event_type: eventType,
+        event_type: input.eventType,
         occurred_at: occurredAt,
         qr_token_hash: tokenHash,
         idempotency_key: input.idempotencyKey,
@@ -360,6 +543,7 @@ export class PointageService {
       .select('id,event_type,occurred_at')
       .single();
     if (error?.code === '23505') throw new ConflictException('POINTAGE_DEJA_TRAITE');
+    this.throwAttendanceWriteError(error, 'POINTAGE_NON_CONFIRME');
     if (error || !event) throw new InternalServerErrorException('POINTAGE_NON_CONFIRME');
     await this.realtime.publish({
       type: 'attendance.recorded',
@@ -417,6 +601,17 @@ export class PointageService {
       target_id: targetId,
       details,
     });
+  }
+
+  private throwAttendanceWriteError(error: { code?: string; message?: string } | null, fallback: string) {
+    if (!error) return;
+    if (error.code === 'P0001' && error.message?.includes('DAILY_ATTENDANCE_LIMIT_REACHED')) {
+      throw new ConflictException('LIMITE_POINTAGES_QUOTIDIENNE_ATTEINTE');
+    }
+    if (error.code === 'P0001' && error.message?.includes('ATTENDANCE_TYPE_ALREADY_RECORDED')) {
+      throw new ConflictException('TYPE_POINTAGE_DEJA_ENREGISTRE');
+    }
+    throw new InternalServerErrorException(fallback);
   }
 
   private newActivationCode() {
