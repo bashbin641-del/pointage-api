@@ -42,6 +42,12 @@ type TerminalRow = {
   sites?: { name: string; timezone: string } | null;
 };
 
+type AttendanceTrafficDay = {
+  date: string;
+  start: string;
+  end: string;
+};
+
 @Injectable()
 export class PointageService {
   constructor(
@@ -118,23 +124,49 @@ export class PointageService {
   async adminSummary(authorization?: string) {
     await this.auth.requireAdmin(authorization);
     const supabase = this.infrastructure.getSupabaseClient();
-    const today = new Date().toISOString().slice(0, 10);
-    const start = `${today}T00:00:00.000Z`;
-    const [employees, events, sites, terminals] = await Promise.all([
+    const generatedAt = new Date();
+    const trafficDays = this.attendanceTrafficDays(generatedAt, 7);
+    const trafficRequests = trafficDays.flatMap((day) => [
+      supabase
+        .from('evenements_pointage')
+        .select('id', { count: 'exact', head: true })
+        .eq('event_type', 'entree')
+        .gte('occurred_at', day.start)
+        .lt('occurred_at', day.end),
+      supabase
+        .from('evenements_pointage')
+        .select('id', { count: 'exact', head: true })
+        .eq('event_type', 'sortie')
+        .gte('occurred_at', day.start)
+        .lt('occurred_at', day.end),
+    ]);
+    const [employees, sites, terminals, ...trafficCounts] = await Promise.all([
       supabase.from('employes').select('*', { count: 'exact', head: true }).eq('active', true),
-      supabase.from('evenements_pointage').select('*', { count: 'exact', head: true }).gte('occurred_at', start),
       supabase.from('sites').select('*', { count: 'exact', head: true }).eq('active', true),
       supabase.from('terminaux').select('*', { count: 'exact', head: true }).eq('active', true),
+      ...trafficRequests,
     ]);
-    if (employees.error || events.error || sites.error || terminals.error) {
+    if (employees.error || sites.error || terminals.error || trafficCounts.some((result) => result.error)) {
       throw new InternalServerErrorException('TABLEAU_DE_BORD_INDISPONIBLE');
     }
+    const traffic = trafficDays.map((day, index) => {
+      const entries = trafficCounts[index * 2]?.count ?? 0;
+      const exits = trafficCounts[index * 2 + 1]?.count ?? 0;
+      return { date: day.date, entries, exits, total: entries + exits };
+    });
+    const today = traffic.at(-1);
     return {
-      period: today,
+      period: today?.date ?? generatedAt.toISOString().slice(0, 10),
+      generatedAt: generatedAt.toISOString(),
       activeEmployees: employees.count ?? 0,
-      attendanceEvents: events.count ?? 0,
+      attendanceEvents: today?.total ?? 0,
       activeSites: sites.count ?? 0,
       activeTerminals: terminals.count ?? 0,
+      attendanceTraffic: {
+        startDate: traffic[0]?.date ?? '',
+        endDate: today?.date ?? '',
+        days: traffic,
+      },
     };
   }
 
@@ -625,6 +657,22 @@ export class PointageService {
       code: randomBytes(6).toString('hex').toUpperCase(),
       activationExpiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
     };
+  }
+
+  private attendanceTrafficDays(now: Date, count: number): AttendanceTrafficDay[] {
+    const today = new Date(now);
+    today.setUTCHours(0, 0, 0, 0);
+    return Array.from({ length: count }, (_, index) => {
+      const start = new Date(today);
+      start.setUTCDate(start.getUTCDate() - (count - index - 1));
+      const end = new Date(start);
+      end.setUTCDate(end.getUTCDate() + 1);
+      return {
+        date: start.toISOString().slice(0, 10),
+        start: start.toISOString(),
+        end: end.toISOString(),
+      };
+    });
   }
 
   private hash(value: string) {
