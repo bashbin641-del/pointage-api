@@ -12,6 +12,7 @@ import {
 import { createHash, randomBytes } from 'node:crypto';
 import { AuthService } from './auth.service';
 import { InfrastructureService } from './infrastructure.service';
+import { isMatriculeFor, nextAvailableMatricule, normalizeMatricule, parseHiringDate } from './matricule';
 import { RealtimeService } from './realtime.service';
 import type {
   ActivateTerminalDto,
@@ -33,6 +34,16 @@ type EmployeeRow = {
   site_id: string | null;
   active: boolean;
   sites?: { name: string; timezone: string } | null;
+};
+
+type CreatedEmployeeRow = {
+  id: string;
+  matricule: string;
+  hired_at: string;
+  display_name: string;
+  active: boolean;
+  created_at: string;
+  sites: { name: string } | null;
 };
 
 type TerminalRow = {
@@ -214,6 +225,7 @@ export class PointageService {
         email: user.email ?? 'Adresse indisponible',
         displayName: String(metadata.inox_admin_display_name || user.email?.split('@')[0] || 'Administrateur INOX'),
         matricule: String(metadata.inox_admin_matricule || 'Non attribué'),
+        hiredAt: String(metadata.inox_admin_hired_at || user.created_at.slice(0, 10)),
         role: metadata.inox_admin_role as 'owner' | 'administrator' | 'maintainer',
         status: metadata.inox_admin_active !== true ? 'blocked' : hasVerifiedFactor ? 'active' : 'pending',
         createdAt: user.created_at,
@@ -228,21 +240,24 @@ export class PointageService {
     const supabase = this.infrastructure.getSupabaseClient();
     const email = input.email.trim().toLowerCase();
     const displayName = input.displayName.trim();
-    const matricule = input.matricule.trim();
+    const hiringDate = this.validHiringDate(input.hiredAt);
+    const requestedMatricule = normalizeMatricule(input.matricule);
+    if (requestedMatricule && !isMatriculeFor(requestedMatricule, 'ADMIN', hiringDate.year)) {
+      throw new BadRequestException('MATRICULE_ADMINISTRATEUR_INVALIDE');
+    }
     const role = input.role;
-    const [{ data: usersData, error: usersError }, { data: employee, error: employeeError }] = await Promise.all([
-      supabase.auth.admin.listUsers({ page: 1, perPage: 1000 }),
-      supabase.from('employes').select('id').eq('matricule', matricule).maybeSingle(),
-    ]);
-    if (usersError || employeeError) {
+    const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    if (usersError) {
       throw new InternalServerErrorException('VERIFICATION_ADMINISTRATEUR_ECHOUEE');
     }
     if (usersData.users.some((user) => user.email?.toLowerCase() === email)) {
       throw new ConflictException('EMAIL_DEJA_UTILISE');
     }
-    if (employee || usersData.users.some((user) => user.app_metadata.inox_admin_matricule === matricule)) {
+    let occupiedMatricules = usersData.users.map((user) => String(user.app_metadata.inox_admin_matricule || ''));
+    if (requestedMatricule && occupiedMatricules.includes(requestedMatricule)) {
       throw new ConflictException('MATRICULE_DEJA_ATTRIBUE');
     }
+    let matricule = requestedMatricule ?? nextAvailableMatricule('ADMIN', hiringDate.year, occupiedMatricules);
 
     const { data: invite, error: inviteError } = await supabase.auth.admin.generateLink({
       type: 'invite',
@@ -253,18 +268,39 @@ export class PointageService {
       throw new BadRequestException('INVITATION_ADMINISTRATEUR_ECHOUEE');
     }
 
-    const { error: updateError } = await supabase.auth.admin.updateUserById(invite.user.id, {
-      app_metadata: {
-        ...invite.user.app_metadata,
-        inox_admin_active: true,
-        inox_admin_role: role,
-        inox_admin_display_name: displayName,
-        inox_admin_matricule: matricule,
-        inox_admin_invited_by: identity.user.id,
-        inox_admin_invitation_pending: true,
-      },
-    });
-    if (updateError) {
+    let administratorUpdated = false;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const { error: updateError } = await supabase.auth.admin.updateUserById(invite.user.id, {
+        app_metadata: {
+          ...invite.user.app_metadata,
+          inox_admin_active: true,
+          inox_admin_role: role,
+          inox_admin_display_name: displayName,
+          inox_admin_matricule: matricule,
+          inox_admin_hired_at: hiringDate.value,
+          inox_admin_invited_by: identity.user.id,
+          inox_admin_invitation_pending: true,
+        },
+      });
+      if (!updateError) {
+        administratorUpdated = true;
+        break;
+      }
+      if (requestedMatricule) {
+        const { data: refreshedUsers } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
+        await supabase.auth.admin.deleteUser(invite.user.id);
+        if (refreshedUsers?.users.some((user) => user.id !== invite.user.id && user.app_metadata.inox_admin_matricule === matricule)) {
+          throw new ConflictException('MATRICULE_DEJA_ATTRIBUE');
+        }
+        throw new BadRequestException('INVITATION_ADMINISTRATEUR_ECHOUEE');
+      }
+      const { data: refreshedUsers, error: refreshError } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      if (refreshError) break;
+      occupiedMatricules = refreshedUsers.users.map((user) => String(user.app_metadata.inox_admin_matricule || ''));
+      if (!occupiedMatricules.includes(matricule)) break;
+      matricule = nextAvailableMatricule('ADMIN', hiringDate.year, occupiedMatricules);
+    }
+    if (!administratorUpdated) {
       await supabase.auth.admin.deleteUser(invite.user.id);
       throw new BadRequestException('INVITATION_ADMINISTRATEUR_ECHOUEE');
     }
@@ -281,6 +317,7 @@ export class PointageService {
         email,
         displayName,
         matricule,
+        hiredAt: hiringDate.value,
         role,
         status: 'pending',
         createdAt: invite.user.created_at,
@@ -383,6 +420,7 @@ export class PointageService {
         email: user.email ?? 'Adresse indisponible',
         displayName: String(user.app_metadata.inox_admin_display_name || user.email?.split('@')[0] || 'Administrateur INOX'),
         matricule: String(user.app_metadata.inox_admin_matricule || 'Non attribué'),
+        hiredAt: String(user.app_metadata.inox_admin_hired_at || user.created_at.slice(0, 10)),
         role: input.role,
         status: user.app_metadata.inox_admin_active !== true ? 'blocked' : hasVerifiedFactor ? 'active' : 'pending',
         createdAt: user.created_at,
@@ -453,7 +491,7 @@ export class PointageService {
     const [{ data, error }, { data: authUsers, error: authUsersError }] = await Promise.all([
       supabase
       .from('employes')
-      .select('id,auth_user_id,matricule,display_name,active,created_at,sites(name)')
+        .select('id,auth_user_id,matricule,hired_at,display_name,active,created_at,sites(name)')
       .order('display_name'),
       supabase.auth.admin.listUsers({ page: 1, perPage: 1000 }),
     ]);
@@ -476,15 +514,24 @@ export class PointageService {
     const supabase = this.infrastructure.getSupabaseClient();
     const email = input.email.trim().toLowerCase();
     const displayName = input.displayName.trim();
-    const matricule = input.matricule.trim();
+    const hiringDate = this.validHiringDate(input.hiredAt);
+    const requestedMatricule = normalizeMatricule(input.matricule);
+    if (requestedMatricule && !isMatriculeFor(requestedMatricule, 'EMP', hiringDate.year)) {
+      throw new BadRequestException('MATRICULE_EMPLOYE_INVALIDE');
+    }
     const { data: site } = await supabase.from('sites').select('id').eq('id', input.siteId).eq('active', true).maybeSingle();
     if (!site) throw new BadRequestException('SITE_INVALIDE');
 
-    const { data: authUsers, error: authUsersError } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
-    if (authUsersError) throw new InternalServerErrorException('VERIFICATION_MATRICULE_ECHOUEE');
-    if (authUsers.users.some((user) => user.app_metadata.inox_admin_matricule === matricule)) {
+    const { data: existingEmployees, error: employeeLookupError } = await supabase
+      .from('employes')
+      .select('matricule')
+      .like('matricule', `INOX-EMP-${hiringDate.year}-%`);
+    if (employeeLookupError) throw new InternalServerErrorException('VERIFICATION_MATRICULE_ECHOUEE');
+    let occupiedMatricules = (existingEmployees ?? []).map((employee) => employee.matricule);
+    if (requestedMatricule && occupiedMatricules.includes(requestedMatricule)) {
       throw new ConflictException('MATRICULE_DEJA_ATTRIBUE');
     }
+    let matricule = requestedMatricule ?? nextAvailableMatricule('EMP', hiringDate.year, occupiedMatricules);
 
     const { data: invite, error: inviteError } = await supabase.auth.admin.generateLink({
       type: 'invite',
@@ -498,20 +545,36 @@ export class PointageService {
       app_metadata: {
         ...invite.user.app_metadata,
         inox_employee_invitation_pending: true,
+        inox_employee_hired_at: hiringDate.value,
       },
     });
     if (metadataError) {
       await supabase.auth.admin.deleteUser(invite.user.id);
       throw new BadRequestException('INVITATION_EMPLOYE_ECHOUEE');
     }
-    const { data: employee, error } = await supabase
-      .from('employes')
-      .insert({ auth_user_id: invite.user.id, matricule, display_name: displayName, site_id: input.siteId })
-      .select('id,matricule,display_name,active,created_at,sites(name)')
-      .single();
-    if (error || !employee) {
+    let employee: CreatedEmployeeRow | null = null;
+    let insertError: { code?: string } | null = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await supabase
+        .from('employes')
+        .insert({ auth_user_id: invite.user.id, matricule, hired_at: hiringDate.value, display_name: displayName, site_id: input.siteId })
+        .select('id,matricule,hired_at,display_name,active,created_at,sites(name)')
+        .single();
+      employee = result.data as CreatedEmployeeRow | null;
+      insertError = result.error;
+      if (!insertError && employee) break;
+      if (insertError?.code !== '23505' || requestedMatricule) break;
+      const { data: refreshedEmployees, error: refreshError } = await supabase
+        .from('employes')
+        .select('matricule')
+        .like('matricule', `INOX-EMP-${hiringDate.year}-%`);
+      if (refreshError) break;
+      occupiedMatricules = (refreshedEmployees ?? []).map((item) => item.matricule);
+      matricule = nextAvailableMatricule('EMP', hiringDate.year, occupiedMatricules);
+    }
+    if (insertError || !employee) {
       await supabase.auth.admin.deleteUser(invite.user.id);
-      if (error?.code === '23505') throw new ConflictException('EMPLOYE_DEJA_EXISTANT');
+      if (insertError?.code === '23505') throw new ConflictException(requestedMatricule ? 'MATRICULE_DEJA_ATTRIBUE' : 'EMPLOYE_DEJA_EXISTANT');
       throw new BadRequestException('CREATION_EMPLOYE_ECHOUEE');
     }
     await this.audit(identity.user.id, 'employee.created', 'employee', employee.id, { matricule });
@@ -521,6 +584,14 @@ export class PointageService {
       invitationTokenHash: invite.properties.hashed_token,
       invitationType: 'invite',
     };
+  }
+
+  private validHiringDate(value: string) {
+    try {
+      return parseHiringDate(value);
+    } catch {
+      throw new BadRequestException('DATE_EMBAUCHE_INVALIDE');
+    }
   }
 
   async regenerateEmployeeInvitation(authorization: string | undefined, employeeId: string) {

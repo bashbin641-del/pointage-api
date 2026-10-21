@@ -4,6 +4,7 @@ import {
   IsIn,
   IsISO8601,
   IsNotEmpty,
+  IsOptional,
   IsString,
   IsUUID,
   Length,
@@ -28,9 +29,14 @@ export class CreateEmployeeDto {
   @MaxLength(120)
   displayName!: string;
 
+  @IsISO8601({ strict: true })
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  hiredAt!: string;
+
+  @IsOptional()
   @IsString()
-  @Matches(/^[0-9]{3}-[0-9]{3}-[0-9]{3}$/)
-  matricule!: string;
+  @Matches(/^INOX-EMP-[0-9]{4}-(?!0000)[0-9]{4}$/)
+  matricule?: string;
 
   @IsUUID()
   siteId!: string;
@@ -45,9 +51,14 @@ export class CreateAdministratorDto {
   @MaxLength(100)
   displayName!: string;
 
+  @IsISO8601({ strict: true })
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  hiredAt!: string;
+
+  @IsOptional()
   @IsString()
-  @Matches(/^[0-9]{3}-[0-9]{3}-[0-9]{3}$/)
-  matricule!: string;
+  @Matches(/^INOX-ADMIN-[0-9]{4}-(?!0000)[0-9]{4}$/)
+  matricule?: string;
 
   @IsIn(['administrator', 'maintainer'])
   role!: 'administrator' | 'maintainer';

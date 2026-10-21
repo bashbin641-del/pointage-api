@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { validate } from 'class-validator';
 import { configureApp } from './app.config';
 import { AppModule } from './app.module';
+import { nextAvailableMatricule } from './matricule';
 import { CreateAdministratorDto, CreateEmployeeDto } from './pointage.dto';
 
 describe('public HTTP routes', () => {
@@ -75,7 +76,7 @@ describe('public HTTP routes', () => {
   });
 
   it.each([
-    ['POST', '/api/v1/admin/administrateurs', { email: 'admin@inox.ci', displayName: 'Admin INOX', matricule: '900-000-002', role: 'administrator' }],
+    ['POST', '/api/v1/admin/administrateurs', { email: 'admin@inox.ci', displayName: 'Admin INOX', hiredAt: '2026-10-21', role: 'administrator' }],
     ['POST', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/invitation', undefined],
     ['PATCH', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/role', { role: 'maintainer' }],
     ['POST', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/invitation', undefined],
@@ -114,16 +115,17 @@ describe('employee matricule validation', () => {
     const employee = new CreateEmployeeDto();
     employee.email = 'employee@inox.ci';
     employee.displayName = 'Employé INOX';
+    employee.hiredAt = '2026-10-21';
     employee.matricule = matricule;
     employee.siteId = '00000000-0000-4000-8000-000000000000';
     return employee;
   }
 
-  it('accepts the 000-000-000 format', async () => {
-    await expect(validate(employeeWithMatricule('123-456-789'))).resolves.toHaveLength(0);
+  it('accepts the INOX employee format', async () => {
+    await expect(validate(employeeWithMatricule('INOX-EMP-2026-0001'))).resolves.toHaveLength(0);
   });
 
-  it.each(['123456789', '12-345-678', 'ABC-456-789'])('rejects invalid matricule %s', async (matricule) => {
+  it.each(['INOX-EMP-2026-0000', 'INOX-ADMIN-2026-0001', 'EMP-2026-0001'])('rejects invalid matricule %s', async (matricule) => {
     const errors = await validate(employeeWithMatricule(matricule));
     expect(errors.some((error) => error.property === 'matricule')).toBe(true);
   });
@@ -134,7 +136,8 @@ describe('administrator invitation validation', () => {
     const administrator = new CreateAdministratorDto();
     administrator.email = 'admin@inox.ci';
     administrator.displayName = 'Administration INOX';
-    administrator.matricule = '900-000-002';
+    administrator.hiredAt = '2026-10-21';
+    administrator.matricule = 'INOX-ADMIN-2026-0002';
     administrator.role = 'maintainer';
     await expect(validate(administrator)).resolves.toHaveLength(0);
   });
@@ -143,7 +146,8 @@ describe('administrator invitation validation', () => {
     const administrator = new CreateAdministratorDto();
     administrator.email = 'admin@inox.ci';
     administrator.displayName = 'Administration INOX';
-    administrator.matricule = '900000002';
+    administrator.hiredAt = '2026-10-21';
+    administrator.matricule = 'INOX-EMP-2026-0002';
     administrator.role = 'administrator';
     const errors = await validate(administrator);
     expect(errors.some((error) => error.property === 'matricule')).toBe(true);
@@ -153,9 +157,23 @@ describe('administrator invitation validation', () => {
     const administrator = new CreateAdministratorDto();
     administrator.email = 'admin@inox.ci';
     administrator.displayName = 'Administration INOX';
-    administrator.matricule = '900-000-002';
+    administrator.hiredAt = '2026-10-21';
+    administrator.matricule = 'INOX-ADMIN-2026-0002';
     administrator.role = 'owner' as 'administrator';
     const errors = await validate(administrator);
     expect(errors.some((error) => error.property === 'role')).toBe(true);
+  });
+});
+
+describe('ordered matricule generation', () => {
+  it('starts at 0001 and reuses the first free number', () => {
+    expect(nextAvailableMatricule('EMP', 2026, [])).toBe('INOX-EMP-2026-0001');
+    expect(nextAvailableMatricule('EMP', 2026, ['INOX-EMP-2026-0001', 'INOX-EMP-2026-0003']))
+      .toBe('INOX-EMP-2026-0002');
+  });
+
+  it('keeps employee and administrator sequences independent', () => {
+    expect(nextAvailableMatricule('ADMIN', 2026, ['INOX-EMP-2026-0001']))
+      .toBe('INOX-ADMIN-2026-0001');
   });
 });
