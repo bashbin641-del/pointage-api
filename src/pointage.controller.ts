@@ -7,8 +7,10 @@ import {
   CreateTerminalDto,
   ScanDto,
   UpdateAdministratorRoleDto,
+  UpdateAdministratorMatriculeDto,
   UpdateAttendanceDto,
   UpdateEmployeeStatusDto,
+  UpdateEmployeeMatriculeDto,
 } from './pointage.dto';
 import { PointageService } from './pointage.service';
 
@@ -89,6 +91,15 @@ export class PointageController {
     return this.pointage.updateAdministratorRole(authorization, userId, input);
   }
 
+  @Patch('admin/administrateurs/:id/matricule')
+  updateAdministratorMatricule(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) userId: string,
+    @Body() input: UpdateAdministratorMatriculeDto,
+  ) {
+    return this.pointage.updateAdministratorMatricule(authorization, userId, input);
+  }
+
   @Get('admin/sites')
   listSites(@Headers('authorization') authorization?: string) {
     return this.pointage.listSites(authorization);
@@ -132,6 +143,15 @@ export class PointageController {
     @Body() input: UpdateEmployeeStatusDto,
   ) {
     return this.pointage.updateEmployeeStatus(authorization, employeeId, input);
+  }
+
+  @Patch('admin/employes/:id/matricule')
+  updateEmployeeMatricule(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) employeeId: string,
+    @Body() input: UpdateEmployeeMatriculeDto,
+  ) {
+    return this.pointage.updateEmployeeMatricule(authorization, employeeId, input);
   }
 
   @Delete('admin/employes/:id')

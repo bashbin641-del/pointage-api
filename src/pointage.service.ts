@@ -22,8 +22,10 @@ import type {
   CreateTerminalDto,
   ScanDto,
   UpdateAdministratorRoleDto,
+  UpdateAdministratorMatriculeDto,
   UpdateAttendanceDto,
   UpdateEmployeeStatusDto,
+  UpdateEmployeeMatriculeDto,
 } from './pointage.dto';
 
 type EmployeeRow = {
@@ -428,6 +430,77 @@ export class PointageService {
     };
   }
 
+  async updateAdministratorMatricule(
+    authorization: string | undefined,
+    userId: string,
+    input: UpdateAdministratorMatriculeDto,
+  ) {
+    const identity = await this.auth.requireManager(authorization);
+    const supabase = this.infrastructure.getSupabaseClient();
+    const [{ data: userData, error: userError }, { data: factorData, error: factorError }] = await Promise.all([
+      supabase.auth.admin.getUserById(userId),
+      supabase.auth.admin.mfa.listFactors({ userId }),
+    ]);
+    const user = userData.user;
+    if (userError || factorError) throw new InternalServerErrorException('MISE_A_JOUR_MATRICULE_ADMINISTRATEUR_ECHOUEE');
+    if (!user || !['owner', 'administrator', 'maintainer'].includes(String(user.app_metadata.inox_admin_role))) {
+      throw new NotFoundException('ADMINISTRATEUR_INTROUVABLE');
+    }
+
+    const actorRole = String(identity.user.app_metadata.inox_admin_role);
+    if (user.app_metadata.inox_admin_role === 'owner' && actorRole !== 'owner') {
+      throw new ForbiddenException('PROPRIETAIRE_PROTEGE');
+    }
+
+    const hiringDate = this.validHiringDate(String(user.app_metadata.inox_admin_hired_at || user.created_at.slice(0, 10)));
+    const matricule = normalizeMatricule(input.matricule);
+    if (!matricule || !isMatriculeFor(matricule, 'ADMIN', hiringDate.year)) {
+      throw new BadRequestException('MATRICULE_ADMINISTRATEUR_INVALIDE');
+    }
+    const previousMatricule = String(user.app_metadata.inox_admin_matricule || '');
+    if (matricule !== previousMatricule) {
+      const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      if (usersError) throw new InternalServerErrorException('VERIFICATION_MATRICULE_ECHOUEE');
+      if (usersData.users.some((candidate) => candidate.id !== userId && candidate.app_metadata.inox_admin_matricule === matricule)) {
+        throw new ConflictException('MATRICULE_DEJA_ATTRIBUE');
+      }
+
+      const { data: updatedData, error: updateError } = await supabase.auth.admin.updateUserById(userId, {
+        app_metadata: {
+          ...user.app_metadata,
+          inox_admin_matricule: matricule,
+        },
+      });
+      if (updateError || !updatedData.user) {
+        const { data: refreshedUsers } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
+        if (refreshedUsers?.users.some((candidate) => candidate.id !== userId && candidate.app_metadata.inox_admin_matricule === matricule)) {
+          throw new ConflictException('MATRICULE_DEJA_ATTRIBUE');
+        }
+        throw new InternalServerErrorException('MISE_A_JOUR_MATRICULE_ADMINISTRATEUR_ECHOUEE');
+      }
+
+      await this.audit(identity.user.id, 'administrator.matricule_updated', 'administrator', userId, {
+        previousMatricule,
+        matricule,
+      });
+      await this.realtime.publish({ type: 'administrator.updated' });
+    }
+
+    const hasVerifiedFactor = factorData.factors.some((factor) => factor.status === 'verified');
+    return {
+      member: {
+        userId: user.id,
+        email: user.email ?? 'Adresse indisponible',
+        displayName: String(user.app_metadata.inox_admin_display_name || user.email?.split('@')[0] || 'Administrateur INOX'),
+        matricule,
+        hiredAt: hiringDate.value,
+        role: user.app_metadata.inox_admin_role as 'owner' | 'administrator' | 'maintainer',
+        status: user.app_metadata.inox_admin_active !== true ? 'blocked' : hasVerifiedFactor ? 'active' : 'pending',
+        createdAt: user.created_at,
+      },
+    };
+  }
+
   async listSites(authorization?: string) {
     await this.auth.requireAdmin(authorization);
     const { data, error } = await this.infrastructure
@@ -675,6 +748,45 @@ export class PointageService {
 
     await this.audit(identity.user.id, input.active ? 'employee.unblocked' : 'employee.blocked', 'employee', employeeId, {
       matricule: current.matricule,
+    });
+    await this.realtime.publish({ type: 'employee.updated', employeeId });
+    return { employee };
+  }
+
+  async updateEmployeeMatricule(
+    authorization: string | undefined,
+    employeeId: string,
+    input: UpdateEmployeeMatriculeDto,
+  ) {
+    const identity = await this.auth.requireManager(authorization);
+    const supabase = this.infrastructure.getSupabaseClient();
+    const { data: current, error: lookupError } = await supabase
+      .from('employes')
+      .select('id,matricule,hired_at,display_name,active,created_at,sites(name)')
+      .eq('id', employeeId)
+      .maybeSingle();
+    if (lookupError) throw new InternalServerErrorException('MISE_A_JOUR_MATRICULE_EMPLOYE_ECHOUEE');
+    if (!current) throw new NotFoundException('EMPLOYE_INTROUVABLE');
+
+    const hiringDate = this.validHiringDate(current.hired_at);
+    const matricule = normalizeMatricule(input.matricule);
+    if (!matricule || !isMatriculeFor(matricule, 'EMP', hiringDate.year)) {
+      throw new BadRequestException('MATRICULE_EMPLOYE_INVALIDE');
+    }
+    if (matricule === current.matricule) return { employee: current };
+
+    const { data: employee, error } = await supabase
+      .from('employes')
+      .update({ matricule, updated_at: new Date().toISOString() })
+      .eq('id', employeeId)
+      .select('id,matricule,hired_at,display_name,active,created_at,sites(name)')
+      .maybeSingle();
+    if (error?.code === '23505') throw new ConflictException('MATRICULE_DEJA_ATTRIBUE');
+    if (error || !employee) throw new InternalServerErrorException('MISE_A_JOUR_MATRICULE_EMPLOYE_ECHOUEE');
+
+    await this.audit(identity.user.id, 'employee.matricule_updated', 'employee', employeeId, {
+      previousMatricule: current.matricule,
+      matricule,
     });
     await this.realtime.publish({ type: 'employee.updated', employeeId });
     return { employee };

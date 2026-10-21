@@ -69,6 +69,12 @@ export class UpdateAdministratorRoleDto {
   role!: 'administrator' | 'maintainer';
 }
 
+export class UpdateAdministratorMatriculeDto {
+  @IsString()
+  @Matches(/^INOX-ADMIN-[0-9]{4}-(?!0000)[0-9]{4}$/)
+  matricule!: string;
+}
+
 export class CreateTerminalDto {
   @IsString()
   @MinLength(2)
@@ -88,6 +94,12 @@ export class ActivateTerminalDto {
 export class UpdateEmployeeStatusDto {
   @IsBoolean()
   active!: boolean;
+}
+
+export class UpdateEmployeeMatriculeDto {
+  @IsString()
+  @Matches(/^INOX-EMP-[0-9]{4}-(?!0000)[0-9]{4}$/)
+  matricule!: string;
 }
 
 export class UpdateAttendanceDto {

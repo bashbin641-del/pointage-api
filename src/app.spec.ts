@@ -3,8 +3,14 @@ import { Test } from '@nestjs/testing';
 import { validate } from 'class-validator';
 import { configureApp } from './app.config';
 import { AppModule } from './app.module';
+import { AuthService } from './auth.service';
 import { nextAvailableMatricule } from './matricule';
-import { CreateAdministratorDto, CreateEmployeeDto } from './pointage.dto';
+import {
+  CreateAdministratorDto,
+  CreateEmployeeDto,
+  UpdateAdministratorMatriculeDto,
+  UpdateEmployeeMatriculeDto,
+} from './pointage.dto';
 
 describe('public HTTP routes', () => {
   let app: INestApplication;
@@ -79,10 +85,12 @@ describe('public HTTP routes', () => {
     ['POST', '/api/v1/admin/administrateurs', { email: 'admin@inox.ci', displayName: 'Admin INOX', hiredAt: '2026-10-21', role: 'administrator' }],
     ['POST', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/invitation', undefined],
     ['PATCH', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/role', { role: 'maintainer' }],
+    ['PATCH', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/matricule', { matricule: 'INOX-ADMIN-2026-0005' }],
     ['POST', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/invitation', undefined],
     ['POST', '/api/v1/moi/activation', undefined],
     ['DELETE', '/api/v1/admin/sites/00000000-0000-4000-8000-000000000000', undefined],
     ['PATCH', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/status', { active: false }],
+    ['PATCH', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/matricule', { matricule: 'INOX-EMP-2026-0002' }],
     ['DELETE', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000', undefined],
     ['PATCH', '/api/v1/admin/presences/00000000-0000-4000-8000-000000000000', { occurredAt: '2026-10-20T08:00:00.000Z' }],
     ['DELETE', '/api/v1/admin/presences/00000000-0000-4000-8000-000000000000', undefined],
@@ -175,5 +183,43 @@ describe('ordered matricule generation', () => {
   it('keeps employee and administrator sequences independent', () => {
     expect(nextAvailableMatricule('ADMIN', 2026, ['INOX-EMP-2026-0001']))
       .toBe('INOX-ADMIN-2026-0001');
+  });
+});
+
+describe('matricule update validation', () => {
+  it('accepts only an employee matricule for an employee update', async () => {
+    const valid = new UpdateEmployeeMatriculeDto();
+    valid.matricule = 'INOX-EMP-2026-0002';
+    await expect(validate(valid)).resolves.toHaveLength(0);
+
+    const invalid = new UpdateEmployeeMatriculeDto();
+    invalid.matricule = 'INOX-ADMIN-2026-0002';
+    const errors = await validate(invalid);
+    expect(errors.some((error) => error.property === 'matricule')).toBe(true);
+  });
+
+  it('accepts only an administrator matricule for an administrator update', async () => {
+    const valid = new UpdateAdministratorMatriculeDto();
+    valid.matricule = 'INOX-ADMIN-2026-0005';
+    await expect(validate(valid)).resolves.toHaveLength(0);
+
+    const invalid = new UpdateAdministratorMatriculeDto();
+    invalid.matricule = 'INOX-EMP-2026-0005';
+    const errors = await validate(invalid);
+    expect(errors.some((error) => error.property === 'matricule')).toBe(true);
+  });
+});
+
+describe('account-management permission', () => {
+  it.each(['owner', 'administrator'])('allows the %s role', async (role) => {
+    const auth = new AuthService({} as never);
+    jest.spyOn(auth, 'requireAdmin').mockResolvedValue({ user: { app_metadata: { inox_admin_role: role } } } as never);
+    await expect(auth.requireManager('Bearer test')).resolves.toBeDefined();
+  });
+
+  it('rejects the maintainer role', async () => {
+    const auth = new AuthService({} as never);
+    jest.spyOn(auth, 'requireAdmin').mockResolvedValue({ user: { app_metadata: { inox_admin_role: 'maintainer' } } } as never);
+    await expect(auth.requireManager('Bearer test')).rejects.toThrow('GESTION_ADMIN_REQUISE');
   });
 });
