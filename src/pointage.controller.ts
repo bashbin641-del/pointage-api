@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Header, Headers, Param, ParseUUIDPipe, Patch, Post, Sse } from '@nestjs/common';
 import {
   ActivateTerminalDto,
+  CreateAdministratorDto,
   CreateEmployeeDto,
   CreateSiteDto,
   CreateTerminalDto,
@@ -50,6 +51,19 @@ export class PointageController {
   @Get('admin/tableau-de-bord')
   adminSummary(@Headers('authorization') authorization?: string) {
     return this.pointage.adminSummary(authorization);
+  }
+
+  @Get('admin/administrateurs')
+  listAdministrators(@Headers('authorization') authorization?: string) {
+    return this.pointage.listAdministrators(authorization);
+  }
+
+  @Post('admin/administrateurs')
+  createAdministrator(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() input: CreateAdministratorDto,
+  ) {
+    return this.pointage.createAdministrator(authorization, input);
   }
 
   @Get('admin/sites')

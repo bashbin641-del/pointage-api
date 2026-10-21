@@ -3,7 +3,7 @@ import { Test } from '@nestjs/testing';
 import { validate } from 'class-validator';
 import { configureApp } from './app.config';
 import { AppModule } from './app.module';
-import { CreateEmployeeDto } from './pointage.dto';
+import { CreateAdministratorDto, CreateEmployeeDto } from './pointage.dto';
 
 describe('public HTTP routes', () => {
   let app: INestApplication;
@@ -44,6 +44,7 @@ describe('public HTTP routes', () => {
     '/api/v1/moi',
     '/api/v1/moi/pointages',
     '/api/v1/admin/tableau-de-bord',
+    '/api/v1/admin/administrateurs',
     '/api/v1/admin/sites',
     '/api/v1/admin/employes',
     '/api/v1/admin/presences',
@@ -74,6 +75,7 @@ describe('public HTTP routes', () => {
   });
 
   it.each([
+    ['POST', '/api/v1/admin/administrateurs', { email: 'admin@inox.ci', displayName: 'Admin INOX', matricule: '900-000-002' }],
     ['DELETE', '/api/v1/admin/sites/00000000-0000-4000-8000-000000000000', undefined],
     ['PATCH', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/status', { active: false }],
     ['DELETE', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000', undefined],
@@ -119,6 +121,25 @@ describe('employee matricule validation', () => {
 
   it.each(['123456789', '12-345-678', 'ABC-456-789'])('rejects invalid matricule %s', async (matricule) => {
     const errors = await validate(employeeWithMatricule(matricule));
+    expect(errors.some((error) => error.property === 'matricule')).toBe(true);
+  });
+});
+
+describe('administrator invitation validation', () => {
+  it('accepts a professional email, a name and a formatted matricule', async () => {
+    const administrator = new CreateAdministratorDto();
+    administrator.email = 'admin@inox.ci';
+    administrator.displayName = 'Administration INOX';
+    administrator.matricule = '900-000-002';
+    await expect(validate(administrator)).resolves.toHaveLength(0);
+  });
+
+  it('rejects an invalid administrator matricule', async () => {
+    const administrator = new CreateAdministratorDto();
+    administrator.email = 'admin@inox.ci';
+    administrator.displayName = 'Administration INOX';
+    administrator.matricule = '900000002';
+    const errors = await validate(administrator);
     expect(errors.some((error) => error.property === 'matricule')).toBe(true);
   });
 });

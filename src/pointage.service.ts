@@ -15,6 +15,7 @@ import { InfrastructureService } from './infrastructure.service';
 import { RealtimeService } from './realtime.service';
 import type {
   ActivateTerminalDto,
+  CreateAdministratorDto,
   CreateEmployeeDto,
   CreateSiteDto,
   CreateTerminalDto,
@@ -166,6 +167,92 @@ export class PointageService {
         startDate: traffic[0]?.date ?? '',
         endDate: today?.date ?? '',
         days: traffic,
+      },
+    };
+  }
+
+  async listAdministrators(authorization?: string) {
+    await this.auth.requireManager(authorization);
+    const { data, error } = await this.infrastructure
+      .getSupabaseClient()
+      .auth.admin.listUsers({ page: 1, perPage: 1000 });
+    if (error) throw new InternalServerErrorException('ADMINISTRATEURS_INDISPONIBLES');
+
+    const items = data.users.flatMap((user) => {
+      const metadata = user.app_metadata;
+      const role = metadata.inox_admin_role;
+      if (role !== 'owner' && role !== 'administrator') return [];
+      return [{
+        userId: user.id,
+        email: user.email ?? 'Adresse indisponible',
+        displayName: String(metadata.inox_admin_display_name || user.email?.split('@')[0] || 'Administrateur INOX'),
+        matricule: String(metadata.inox_admin_matricule || 'Non attribué'),
+        role,
+        status: metadata.inox_admin_active !== true ? 'blocked' : user.last_sign_in_at ? 'active' : 'pending',
+        createdAt: user.created_at,
+      }];
+    }).sort((first, second) => first.displayName.localeCompare(second.displayName, 'fr'));
+    return { items };
+  }
+
+  async createAdministrator(authorization: string | undefined, input: CreateAdministratorDto) {
+    const identity = await this.auth.requireManager(authorization);
+    const supabase = this.infrastructure.getSupabaseClient();
+    const email = input.email.trim().toLowerCase();
+    const displayName = input.displayName.trim();
+    const matricule = input.matricule.trim();
+    const [{ data: usersData, error: usersError }, { data: employee, error: employeeError }] = await Promise.all([
+      supabase.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+      supabase.from('employes').select('id').eq('matricule', matricule).maybeSingle(),
+    ]);
+    if (usersError || employeeError) {
+      throw new InternalServerErrorException('VERIFICATION_ADMINISTRATEUR_ECHOUEE');
+    }
+    if (usersData.users.some((user) => user.email?.toLowerCase() === email)) {
+      throw new ConflictException('EMAIL_DEJA_UTILISE');
+    }
+    if (employee || usersData.users.some((user) => user.app_metadata.inox_admin_matricule === matricule)) {
+      throw new ConflictException('MATRICULE_DEJA_ATTRIBUE');
+    }
+
+    const { data: invite, error: inviteError } = await supabase.auth.admin.generateLink({
+      type: 'invite',
+      email,
+      options: { data: { display_name: displayName, invitation_type: 'administrator' } },
+    });
+    if (inviteError || !invite.user || !invite.properties?.hashed_token) {
+      throw new BadRequestException('INVITATION_ADMINISTRATEUR_ECHOUEE');
+    }
+
+    const { error: updateError } = await supabase.auth.admin.updateUserById(invite.user.id, {
+      app_metadata: {
+        ...invite.user.app_metadata,
+        inox_admin_active: true,
+        inox_admin_role: 'administrator',
+        inox_admin_display_name: displayName,
+        inox_admin_matricule: matricule,
+        inox_admin_invited_by: identity.user.id,
+      },
+    });
+    if (updateError) {
+      await supabase.auth.admin.deleteUser(invite.user.id);
+      throw new BadRequestException('INVITATION_ADMINISTRATEUR_ECHOUEE');
+    }
+
+    await this.audit(identity.user.id, 'administrator.invited', 'administrator', invite.user.id, {
+      matricule,
+      role: 'administrator',
+    });
+    return {
+      invitationTokenHash: invite.properties.hashed_token,
+      member: {
+        userId: invite.user.id,
+        email,
+        displayName,
+        matricule,
+        role: 'administrator',
+        status: 'pending',
+        createdAt: invite.user.created_at,
       },
     };
   }

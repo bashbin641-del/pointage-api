@@ -36,6 +36,20 @@ export class CreateEmployeeDto {
   siteId!: string;
 }
 
+export class CreateAdministratorDto {
+  @IsEmail()
+  email!: string;
+
+  @IsString()
+  @MinLength(2)
+  @MaxLength(100)
+  displayName!: string;
+
+  @IsString()
+  @Matches(/^[0-9]{3}-[0-9]{3}-[0-9]{3}$/)
+  matricule!: string;
+}
+
 export class CreateTerminalDto {
   @IsString()
   @MinLength(2)
