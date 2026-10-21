@@ -211,9 +211,15 @@ export class PointageService {
     const supabase = this.infrastructure.getSupabaseClient();
     const email = input.email.trim().toLowerCase();
     const displayName = input.displayName.trim();
-    const matricule = input.matricule.trim().toUpperCase();
+    const matricule = input.matricule.trim();
     const { data: site } = await supabase.from('sites').select('id').eq('id', input.siteId).eq('active', true).maybeSingle();
     if (!site) throw new BadRequestException('SITE_INVALIDE');
+
+    const { data: authUsers, error: authUsersError } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    if (authUsersError) throw new InternalServerErrorException('VERIFICATION_MATRICULE_ECHOUEE');
+    if (authUsers.users.some((user) => user.app_metadata.inox_admin_matricule === matricule)) {
+      throw new ConflictException('MATRICULE_DEJA_ATTRIBUE');
+    }
 
     const { data: invite, error: inviteError } = await supabase.auth.admin.generateLink({
       type: 'invite',

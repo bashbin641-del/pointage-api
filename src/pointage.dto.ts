@@ -8,6 +8,7 @@ import {
   IsUUID,
   Length,
   MaxLength,
+  Matches,
   MinLength,
 } from 'class-validator';
 
@@ -28,8 +29,7 @@ export class CreateEmployeeDto {
   displayName!: string;
 
   @IsString()
-  @MinLength(2)
-  @MaxLength(40)
+  @Matches(/^[0-9]{3}-[0-9]{3}-[0-9]{3}$/)
   matricule!: string;
 
   @IsUUID()

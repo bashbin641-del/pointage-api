@@ -1,7 +1,9 @@
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { validate } from 'class-validator';
 import { configureApp } from './app.config';
 import { AppModule } from './app.module';
+import { CreateEmployeeDto } from './pointage.dto';
 
 describe('public HTTP routes', () => {
   let app: INestApplication;
@@ -98,5 +100,25 @@ describe('public HTTP routes', () => {
       }),
     });
     expect(response.status).toBe(400);
+  });
+});
+
+describe('employee matricule validation', () => {
+  function employeeWithMatricule(matricule: string) {
+    const employee = new CreateEmployeeDto();
+    employee.email = 'employee@inox.ci';
+    employee.displayName = 'Employé INOX';
+    employee.matricule = matricule;
+    employee.siteId = '00000000-0000-4000-8000-000000000000';
+    return employee;
+  }
+
+  it('accepts the 000-000-000 format', async () => {
+    await expect(validate(employeeWithMatricule('123-456-789'))).resolves.toHaveLength(0);
+  });
+
+  it.each(['123456789', '12-345-678', 'ABC-456-789'])('rejects invalid matricule %s', async (matricule) => {
+    const errors = await validate(employeeWithMatricule(matricule));
+    expect(errors.some((error) => error.property === 'matricule')).toBe(true);
   });
 });
