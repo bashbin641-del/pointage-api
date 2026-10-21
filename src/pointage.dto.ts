@@ -70,6 +70,10 @@ export class UpdateAdministratorRoleDto {
 }
 
 export class UpdateAdministratorMatriculeDto {
+  @IsISO8601({ strict: true })
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  hiredAt!: string;
+
   @IsString()
   @Matches(/^INOX-ADMIN-[0-9]{4}-(?!0000)[0-9]{4}$/)
   matricule!: string;
@@ -97,6 +101,10 @@ export class UpdateEmployeeStatusDto {
 }
 
 export class UpdateEmployeeMatriculeDto {
+  @IsISO8601({ strict: true })
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  hiredAt!: string;
+
   @IsString()
   @Matches(/^INOX-EMP-[0-9]{4}-(?!0000)[0-9]{4}$/)
   matricule!: string;

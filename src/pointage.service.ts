@@ -452,13 +452,14 @@ export class PointageService {
       throw new ForbiddenException('PROPRIETAIRE_PROTEGE');
     }
 
-    const hiringDate = this.validHiringDate(String(user.app_metadata.inox_admin_hired_at || user.created_at.slice(0, 10)));
+    const previousHiringDate = this.validHiringDate(String(user.app_metadata.inox_admin_hired_at || user.created_at.slice(0, 10)));
+    const hiringDate = this.validHiringDate(input.hiredAt);
     const matricule = normalizeMatricule(input.matricule);
     if (!matricule || !isMatriculeFor(matricule, 'ADMIN', hiringDate.year)) {
       throw new BadRequestException('MATRICULE_ADMINISTRATEUR_INVALIDE');
     }
     const previousMatricule = String(user.app_metadata.inox_admin_matricule || '');
-    if (matricule !== previousMatricule) {
+    if (matricule !== previousMatricule || hiringDate.value !== previousHiringDate.value) {
       const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
       if (usersError) throw new InternalServerErrorException('VERIFICATION_MATRICULE_ECHOUEE');
       if (usersData.users.some((candidate) => candidate.id !== userId && candidate.app_metadata.inox_admin_matricule === matricule)) {
@@ -469,6 +470,7 @@ export class PointageService {
         app_metadata: {
           ...user.app_metadata,
           inox_admin_matricule: matricule,
+          inox_admin_hired_at: hiringDate.value,
         },
       });
       if (updateError || !updatedData.user) {
@@ -479,9 +481,11 @@ export class PointageService {
         throw new InternalServerErrorException('MISE_A_JOUR_MATRICULE_ADMINISTRATEUR_ECHOUEE');
       }
 
-      await this.audit(identity.user.id, 'administrator.matricule_updated', 'administrator', userId, {
+      await this.audit(identity.user.id, 'administrator.professional_identity_updated', 'administrator', userId, {
         previousMatricule,
         matricule,
+        previousHiredAt: previousHiringDate.value,
+        hiredAt: hiringDate.value,
       });
       await this.realtime.publish({ type: 'administrator.updated' });
     }
@@ -762,31 +766,54 @@ export class PointageService {
     const supabase = this.infrastructure.getSupabaseClient();
     const { data: current, error: lookupError } = await supabase
       .from('employes')
-      .select('id,matricule,hired_at,display_name,active,created_at,sites(name)')
+      .select('id,auth_user_id,matricule,hired_at,display_name,active,created_at,sites(name)')
       .eq('id', employeeId)
       .maybeSingle();
     if (lookupError) throw new InternalServerErrorException('MISE_A_JOUR_MATRICULE_EMPLOYE_ECHOUEE');
     if (!current) throw new NotFoundException('EMPLOYE_INTROUVABLE');
 
-    const hiringDate = this.validHiringDate(current.hired_at);
+    const previousHiringDate = this.validHiringDate(current.hired_at);
+    const hiringDate = this.validHiringDate(input.hiredAt);
     const matricule = normalizeMatricule(input.matricule);
     if (!matricule || !isMatriculeFor(matricule, 'EMP', hiringDate.year)) {
       throw new BadRequestException('MATRICULE_EMPLOYE_INVALIDE');
     }
-    if (matricule === current.matricule) return { employee: current };
+    if (matricule === current.matricule && hiringDate.value === previousHiringDate.value) return { employee: current };
+
+    const { data: employeeUserData, error: employeeUserError } = await supabase.auth.admin.getUserById(current.auth_user_id);
+    if (employeeUserError || !employeeUserData.user) {
+      throw new InternalServerErrorException('MISE_A_JOUR_IDENTITE_EMPLOYE_ECHOUEE');
+    }
+    const { error: metadataError } = await supabase.auth.admin.updateUserById(current.auth_user_id, {
+      app_metadata: {
+        ...employeeUserData.user.app_metadata,
+        inox_employee_hired_at: hiringDate.value,
+      },
+    });
+    if (metadataError) throw new InternalServerErrorException('MISE_A_JOUR_IDENTITE_EMPLOYE_ECHOUEE');
 
     const { data: employee, error } = await supabase
       .from('employes')
-      .update({ matricule, updated_at: new Date().toISOString() })
+      .update({ matricule, hired_at: hiringDate.value, updated_at: new Date().toISOString() })
       .eq('id', employeeId)
       .select('id,matricule,hired_at,display_name,active,created_at,sites(name)')
       .maybeSingle();
-    if (error?.code === '23505') throw new ConflictException('MATRICULE_DEJA_ATTRIBUE');
-    if (error || !employee) throw new InternalServerErrorException('MISE_A_JOUR_MATRICULE_EMPLOYE_ECHOUEE');
+    if (error || !employee) {
+      await supabase.auth.admin.updateUserById(current.auth_user_id, {
+        app_metadata: {
+          ...employeeUserData.user.app_metadata,
+          inox_employee_hired_at: previousHiringDate.value,
+        },
+      });
+      if (error?.code === '23505') throw new ConflictException('MATRICULE_DEJA_ATTRIBUE');
+      throw new InternalServerErrorException('MISE_A_JOUR_IDENTITE_EMPLOYE_ECHOUEE');
+    }
 
-    await this.audit(identity.user.id, 'employee.matricule_updated', 'employee', employeeId, {
+    await this.audit(identity.user.id, 'employee.professional_identity_updated', 'employee', employeeId, {
       previousMatricule: current.matricule,
       matricule,
+      previousHiredAt: previousHiringDate.value,
+      hiredAt: hiringDate.value,
     });
     await this.realtime.publish({ type: 'employee.updated', employeeId });
     return { employee };
