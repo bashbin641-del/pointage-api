@@ -30,6 +30,11 @@ export class PointageController {
     return this.pointage.createQr(authorization);
   }
 
+  @Post('moi/activation')
+  confirmEmployeeActivation(@Headers('authorization') authorization?: string) {
+    return this.pointage.confirmEmployeeActivation(authorization);
+  }
+
   @Sse('events/moi')
   @Header('Cache-Control', 'private, no-cache, no-transform')
   employeeEvents(@Headers('authorization') authorization?: string) {
@@ -66,6 +71,14 @@ export class PointageController {
     return this.pointage.createAdministrator(authorization, input);
   }
 
+  @Post('admin/administrateurs/:id/invitation')
+  regenerateAdministratorInvitation(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) userId: string,
+  ) {
+    return this.pointage.regenerateAdministratorInvitation(authorization, userId);
+  }
+
   @Get('admin/sites')
   listSites(@Headers('authorization') authorization?: string) {
     return this.pointage.listSites(authorization);
@@ -92,6 +105,14 @@ export class PointageController {
   @Post('admin/employes')
   createEmployee(@Headers('authorization') authorization: string | undefined, @Body() input: CreateEmployeeDto) {
     return this.pointage.createEmployee(authorization, input);
+  }
+
+  @Post('admin/employes/:id/invitation')
+  regenerateEmployeeInvitation(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) employeeId: string,
+  ) {
+    return this.pointage.regenerateEmployeeInvitation(authorization, employeeId);
   }
 
   @Patch('admin/employes/:id/status')

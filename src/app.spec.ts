@@ -76,6 +76,9 @@ describe('public HTTP routes', () => {
 
   it.each([
     ['POST', '/api/v1/admin/administrateurs', { email: 'admin@inox.ci', displayName: 'Admin INOX', matricule: '900-000-002' }],
+    ['POST', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/invitation', undefined],
+    ['POST', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/invitation', undefined],
+    ['POST', '/api/v1/moi/activation', undefined],
     ['DELETE', '/api/v1/admin/sites/00000000-0000-4000-8000-000000000000', undefined],
     ['PATCH', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/status', { active: false }],
     ['DELETE', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000', undefined],

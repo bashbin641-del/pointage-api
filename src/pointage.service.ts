@@ -104,6 +104,28 @@ export class PointageService {
     };
   }
 
+  async confirmEmployeeActivation(authorization?: string) {
+    const identity = await this.auth.requireUser(authorization);
+    const employee = await this.employeeForUser(identity.user.id);
+    if (identity.user.app_metadata.inox_employee_invitation_pending !== true) {
+      return { activated: true };
+    }
+
+    const { error } = await this.infrastructure.getSupabaseClient().auth.admin.updateUserById(identity.user.id, {
+      app_metadata: {
+        ...identity.user.app_metadata,
+        inox_employee_invitation_pending: false,
+      },
+    });
+    if (error) throw new InternalServerErrorException('ACTIVATION_EMPLOYE_ECHOUEE');
+
+    await this.audit(identity.user.id, 'employee.activated', 'employee', employee.id, {
+      matricule: employee.matricule,
+    });
+    await this.realtime.publish({ type: 'employee.updated', employeeId: employee.id });
+    return { activated: true };
+  }
+
   async employeeEvents(authorization?: string) {
     const identity = await this.auth.requireUser(authorization);
     const employee = await this.employeeForUser(identity.user.id);
@@ -173,25 +195,30 @@ export class PointageService {
 
   async listAdministrators(authorization?: string) {
     await this.auth.requireManager(authorization);
-    const { data, error } = await this.infrastructure
-      .getSupabaseClient()
-      .auth.admin.listUsers({ page: 1, perPage: 1000 });
+    const supabase = this.infrastructure.getSupabaseClient();
+    const { data, error } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
     if (error) throw new InternalServerErrorException('ADMINISTRATEURS_INDISPONIBLES');
 
-    const items = data.users.flatMap((user) => {
+    const administrators = data.users.filter((user) => {
+      const role = user.app_metadata.inox_admin_role;
+      return role === 'owner' || role === 'administrator';
+    });
+    const items = await Promise.all(administrators.map(async (user) => {
       const metadata = user.app_metadata;
-      const role = metadata.inox_admin_role;
-      if (role !== 'owner' && role !== 'administrator') return [];
-      return [{
+      const { data: factorData, error: factorError } = await supabase.auth.admin.mfa.listFactors({ userId: user.id });
+      if (factorError) throw new InternalServerErrorException('ADMINISTRATEURS_INDISPONIBLES');
+      const hasVerifiedFactor = factorData.factors.some((factor) => factor.status === 'verified');
+      return {
         userId: user.id,
         email: user.email ?? 'Adresse indisponible',
         displayName: String(metadata.inox_admin_display_name || user.email?.split('@')[0] || 'Administrateur INOX'),
         matricule: String(metadata.inox_admin_matricule || 'Non attribué'),
-        role,
-        status: metadata.inox_admin_active !== true ? 'blocked' : user.last_sign_in_at ? 'active' : 'pending',
+        role: metadata.inox_admin_role as 'owner' | 'administrator',
+        status: metadata.inox_admin_active !== true ? 'blocked' : hasVerifiedFactor ? 'active' : 'pending',
         createdAt: user.created_at,
-      }];
-    }).sort((first, second) => first.displayName.localeCompare(second.displayName, 'fr'));
+      };
+    }));
+    items.sort((first, second) => first.displayName.localeCompare(second.displayName, 'fr'));
     return { items };
   }
 
@@ -232,6 +259,7 @@ export class PointageService {
         inox_admin_display_name: displayName,
         inox_admin_matricule: matricule,
         inox_admin_invited_by: identity.user.id,
+        inox_admin_invitation_pending: true,
       },
     });
     if (updateError) {
@@ -245,6 +273,7 @@ export class PointageService {
     });
     return {
       invitationTokenHash: invite.properties.hashed_token,
+      invitationType: 'invite',
       member: {
         userId: invite.user.id,
         email,
@@ -254,6 +283,52 @@ export class PointageService {
         status: 'pending',
         createdAt: invite.user.created_at,
       },
+    };
+  }
+
+  async regenerateAdministratorInvitation(authorization: string | undefined, userId: string) {
+    const identity = await this.auth.requireManager(authorization);
+    const supabase = this.infrastructure.getSupabaseClient();
+    const [{ data: userData, error: userError }, { data: factorData, error: factorError }] = await Promise.all([
+      supabase.auth.admin.getUserById(userId),
+      supabase.auth.admin.mfa.listFactors({ userId }),
+    ]);
+    const user = userData.user;
+    if (userError || factorError) throw new InternalServerErrorException('VERIFICATION_ADMINISTRATEUR_ECHOUEE');
+    if (!user || user.app_metadata.inox_admin_role !== 'administrator') {
+      throw new NotFoundException('ADMINISTRATEUR_INTROUVABLE');
+    }
+    if (user.app_metadata.inox_admin_active !== true) {
+      throw new ConflictException('ADMINISTRATEUR_BLOQUE');
+    }
+    if (factorData.factors.some((factor) => factor.status === 'verified')) {
+      throw new ConflictException('ADMINISTRATEUR_DEJA_ACTIVE');
+    }
+    if (!user.email) throw new BadRequestException('EMAIL_ADMINISTRATEUR_INDISPONIBLE');
+
+    const { error: metadataError } = await supabase.auth.admin.updateUserById(user.id, {
+      app_metadata: {
+        ...user.app_metadata,
+        inox_admin_invitation_pending: true,
+        inox_admin_invited_by: identity.user.id,
+      },
+    });
+    if (metadataError) throw new InternalServerErrorException('REGENERATION_INVITATION_ADMINISTRATEUR_ECHOUEE');
+
+    const { data: link, error: linkError } = await supabase.auth.admin.generateLink({
+      type: 'recovery',
+      email: user.email,
+    });
+    if (linkError || !link.properties?.hashed_token) {
+      throw new BadRequestException('REGENERATION_INVITATION_ADMINISTRATEUR_ECHOUEE');
+    }
+
+    await this.audit(identity.user.id, 'administrator.invitation.regenerated', 'administrator', user.id, {
+      matricule: String(user.app_metadata.inox_admin_matricule || ''),
+    });
+    return {
+      invitationTokenHash: link.properties.hashed_token,
+      invitationType: 'recovery',
     };
   }
 
@@ -316,13 +391,26 @@ export class PointageService {
 
   async listEmployees(authorization?: string) {
     await this.auth.requireAdmin(authorization);
-    const { data, error } = await this.infrastructure
-      .getSupabaseClient()
+    const supabase = this.infrastructure.getSupabaseClient();
+    const [{ data, error }, { data: authUsers, error: authUsersError }] = await Promise.all([
+      supabase
       .from('employes')
-      .select('id,matricule,display_name,active,created_at,sites(name)')
-      .order('display_name');
-    if (error) throw new InternalServerErrorException('EMPLOYES_INDISPONIBLES');
-    return { items: data ?? [] };
+      .select('id,auth_user_id,matricule,display_name,active,created_at,sites(name)')
+      .order('display_name'),
+      supabase.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+    ]);
+    if (error || authUsersError) throw new InternalServerErrorException('EMPLOYES_INDISPONIBLES');
+    const usersById = new Map(authUsers.users.map((user) => [user.id, user]));
+    const items = (data ?? []).map(({ auth_user_id: authUserId, ...employee }) => {
+      const user = usersById.get(authUserId);
+      const pending = user?.app_metadata.inox_employee_invitation_pending === true || !user?.last_sign_in_at;
+      return {
+        ...employee,
+        email: user?.email ?? 'Adresse indisponible',
+        status: !employee.active ? 'blocked' : pending ? 'pending' : 'active',
+      };
+    });
+    return { items };
   }
 
   async createEmployee(authorization: string | undefined, input: CreateEmployeeDto) {
@@ -348,6 +436,16 @@ export class PointageService {
     if (inviteError || !invite.user || !invite.properties?.hashed_token) {
       throw new BadRequestException('INVITATION_EMPLOYE_ECHOUEE');
     }
+    const { error: metadataError } = await supabase.auth.admin.updateUserById(invite.user.id, {
+      app_metadata: {
+        ...invite.user.app_metadata,
+        inox_employee_invitation_pending: true,
+      },
+    });
+    if (metadataError) {
+      await supabase.auth.admin.deleteUser(invite.user.id);
+      throw new BadRequestException('INVITATION_EMPLOYE_ECHOUEE');
+    }
     const { data: employee, error } = await supabase
       .from('employes')
       .insert({ auth_user_id: invite.user.id, matricule, display_name: displayName, site_id: input.siteId })
@@ -360,7 +458,56 @@ export class PointageService {
     }
     await this.audit(identity.user.id, 'employee.created', 'employee', employee.id, { matricule });
     await this.realtime.publish({ type: 'employee.created', employeeId: employee.id });
-    return { employee, invitationTokenHash: invite.properties.hashed_token };
+    return {
+      employee: { ...employee, email, status: 'pending' },
+      invitationTokenHash: invite.properties.hashed_token,
+      invitationType: 'invite',
+    };
+  }
+
+  async regenerateEmployeeInvitation(authorization: string | undefined, employeeId: string) {
+    const identity = await this.auth.requireManager(authorization);
+    const supabase = this.infrastructure.getSupabaseClient();
+    const { data: employee, error: employeeError } = await supabase
+      .from('employes')
+      .select('id,auth_user_id,matricule,display_name,active')
+      .eq('id', employeeId)
+      .maybeSingle();
+    if (employeeError) throw new InternalServerErrorException('VERIFICATION_EMPLOYE_ECHOUEE');
+    if (!employee) throw new NotFoundException('EMPLOYE_INTROUVABLE');
+    if (!employee.active) throw new ConflictException('EMPLOYE_BLOQUE');
+
+    const { data: userData, error: userError } = await supabase.auth.admin.getUserById(employee.auth_user_id);
+    const user = userData.user;
+    if (userError) throw new InternalServerErrorException('VERIFICATION_EMPLOYE_ECHOUEE');
+    if (!user?.email) throw new BadRequestException('EMAIL_EMPLOYE_INDISPONIBLE');
+    const pending = user.app_metadata.inox_employee_invitation_pending === true || !user.last_sign_in_at;
+    if (!pending) throw new ConflictException('EMPLOYE_DEJA_ACTIVE');
+
+    const { error: metadataError } = await supabase.auth.admin.updateUserById(user.id, {
+      app_metadata: {
+        ...user.app_metadata,
+        inox_employee_invitation_pending: true,
+      },
+    });
+    if (metadataError) throw new InternalServerErrorException('REGENERATION_INVITATION_EMPLOYE_ECHOUEE');
+
+    const { data: link, error: linkError } = await supabase.auth.admin.generateLink({
+      type: 'recovery',
+      email: user.email,
+    });
+    if (linkError || !link.properties?.hashed_token) {
+      throw new BadRequestException('REGENERATION_INVITATION_EMPLOYE_ECHOUEE');
+    }
+
+    await this.audit(identity.user.id, 'employee.invitation.regenerated', 'employee', employee.id, {
+      matricule: employee.matricule,
+    });
+    await this.realtime.publish({ type: 'employee.updated', employeeId: employee.id });
+    return {
+      invitationTokenHash: link.properties.hashed_token,
+      invitationType: 'recovery',
+    };
   }
 
   async updateEmployeeStatus(
