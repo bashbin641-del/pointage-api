@@ -75,8 +75,9 @@ describe('public HTTP routes', () => {
   });
 
   it.each([
-    ['POST', '/api/v1/admin/administrateurs', { email: 'admin@inox.ci', displayName: 'Admin INOX', matricule: '900-000-002' }],
+    ['POST', '/api/v1/admin/administrateurs', { email: 'admin@inox.ci', displayName: 'Admin INOX', matricule: '900-000-002', role: 'administrator' }],
     ['POST', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/invitation', undefined],
+    ['PATCH', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/role', { role: 'maintainer' }],
     ['POST', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/invitation', undefined],
     ['POST', '/api/v1/moi/activation', undefined],
     ['DELETE', '/api/v1/admin/sites/00000000-0000-4000-8000-000000000000', undefined],
@@ -134,6 +135,7 @@ describe('administrator invitation validation', () => {
     administrator.email = 'admin@inox.ci';
     administrator.displayName = 'Administration INOX';
     administrator.matricule = '900-000-002';
+    administrator.role = 'maintainer';
     await expect(validate(administrator)).resolves.toHaveLength(0);
   });
 
@@ -142,7 +144,18 @@ describe('administrator invitation validation', () => {
     administrator.email = 'admin@inox.ci';
     administrator.displayName = 'Administration INOX';
     administrator.matricule = '900000002';
+    administrator.role = 'administrator';
     const errors = await validate(administrator);
     expect(errors.some((error) => error.property === 'matricule')).toBe(true);
+  });
+
+  it('rejects owner as an invitation role', async () => {
+    const administrator = new CreateAdministratorDto();
+    administrator.email = 'admin@inox.ci';
+    administrator.displayName = 'Administration INOX';
+    administrator.matricule = '900-000-002';
+    administrator.role = 'owner' as 'administrator';
+    const errors = await validate(administrator);
+    expect(errors.some((error) => error.property === 'role')).toBe(true);
   });
 });

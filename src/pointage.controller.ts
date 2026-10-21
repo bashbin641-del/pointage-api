@@ -6,6 +6,7 @@ import {
   CreateSiteDto,
   CreateTerminalDto,
   ScanDto,
+  UpdateAdministratorRoleDto,
   UpdateAttendanceDto,
   UpdateEmployeeStatusDto,
 } from './pointage.dto';
@@ -77,6 +78,15 @@ export class PointageController {
     @Param('id', new ParseUUIDPipe()) userId: string,
   ) {
     return this.pointage.regenerateAdministratorInvitation(authorization, userId);
+  }
+
+  @Patch('admin/administrateurs/:id/role')
+  updateAdministratorRole(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) userId: string,
+    @Body() input: UpdateAdministratorRoleDto,
+  ) {
+    return this.pointage.updateAdministratorRole(authorization, userId, input);
   }
 
   @Get('admin/sites')

@@ -6,7 +6,7 @@ import {
 import type { User } from '@supabase/supabase-js';
 import { InfrastructureService } from './infrastructure.service';
 
-const adminRoles = new Set(['owner', 'administrator', 'moderator', 'editor', 'viewer']);
+const adminRoles = new Set(['owner', 'administrator', 'maintainer']);
 
 export type RequestIdentity = {
   accessToken: string;

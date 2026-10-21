@@ -48,6 +48,14 @@ export class CreateAdministratorDto {
   @IsString()
   @Matches(/^[0-9]{3}-[0-9]{3}-[0-9]{3}$/)
   matricule!: string;
+
+  @IsIn(['administrator', 'maintainer'])
+  role!: 'administrator' | 'maintainer';
+}
+
+export class UpdateAdministratorRoleDto {
+  @IsIn(['administrator', 'maintainer'])
+  role!: 'administrator' | 'maintainer';
 }
 
 export class CreateTerminalDto {

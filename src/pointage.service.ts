@@ -20,6 +20,7 @@ import type {
   CreateSiteDto,
   CreateTerminalDto,
   ScanDto,
+  UpdateAdministratorRoleDto,
   UpdateAttendanceDto,
   UpdateEmployeeStatusDto,
 } from './pointage.dto';
@@ -201,7 +202,7 @@ export class PointageService {
 
     const administrators = data.users.filter((user) => {
       const role = user.app_metadata.inox_admin_role;
-      return role === 'owner' || role === 'administrator';
+      return role === 'owner' || role === 'administrator' || role === 'maintainer';
     });
     const items = await Promise.all(administrators.map(async (user) => {
       const metadata = user.app_metadata;
@@ -213,7 +214,7 @@ export class PointageService {
         email: user.email ?? 'Adresse indisponible',
         displayName: String(metadata.inox_admin_display_name || user.email?.split('@')[0] || 'Administrateur INOX'),
         matricule: String(metadata.inox_admin_matricule || 'Non attribué'),
-        role: metadata.inox_admin_role as 'owner' | 'administrator',
+        role: metadata.inox_admin_role as 'owner' | 'administrator' | 'maintainer',
         status: metadata.inox_admin_active !== true ? 'blocked' : hasVerifiedFactor ? 'active' : 'pending',
         createdAt: user.created_at,
       };
@@ -228,6 +229,7 @@ export class PointageService {
     const email = input.email.trim().toLowerCase();
     const displayName = input.displayName.trim();
     const matricule = input.matricule.trim();
+    const role = input.role;
     const [{ data: usersData, error: usersError }, { data: employee, error: employeeError }] = await Promise.all([
       supabase.auth.admin.listUsers({ page: 1, perPage: 1000 }),
       supabase.from('employes').select('id').eq('matricule', matricule).maybeSingle(),
@@ -245,7 +247,7 @@ export class PointageService {
     const { data: invite, error: inviteError } = await supabase.auth.admin.generateLink({
       type: 'invite',
       email,
-      options: { data: { display_name: displayName, invitation_type: 'administrator' } },
+      options: { data: { display_name: displayName, invitation_type: 'administrator', administrator_role: role } },
     });
     if (inviteError || !invite.user || !invite.properties?.hashed_token) {
       throw new BadRequestException('INVITATION_ADMINISTRATEUR_ECHOUEE');
@@ -255,7 +257,7 @@ export class PointageService {
       app_metadata: {
         ...invite.user.app_metadata,
         inox_admin_active: true,
-        inox_admin_role: 'administrator',
+        inox_admin_role: role,
         inox_admin_display_name: displayName,
         inox_admin_matricule: matricule,
         inox_admin_invited_by: identity.user.id,
@@ -269,7 +271,7 @@ export class PointageService {
 
     await this.audit(identity.user.id, 'administrator.invited', 'administrator', invite.user.id, {
       matricule,
-      role: 'administrator',
+      role,
     });
     return {
       invitationTokenHash: invite.properties.hashed_token,
@@ -279,7 +281,7 @@ export class PointageService {
         email,
         displayName,
         matricule,
-        role: 'administrator',
+        role,
         status: 'pending',
         createdAt: invite.user.created_at,
       },
@@ -295,7 +297,7 @@ export class PointageService {
     ]);
     const user = userData.user;
     if (userError || factorError) throw new InternalServerErrorException('VERIFICATION_ADMINISTRATEUR_ECHOUEE');
-    if (!user || user.app_metadata.inox_admin_role !== 'administrator') {
+    if (!user || !['administrator', 'maintainer'].includes(String(user.app_metadata.inox_admin_role))) {
       throw new NotFoundException('ADMINISTRATEUR_INTROUVABLE');
     }
     if (user.app_metadata.inox_admin_active !== true) {
@@ -329,6 +331,62 @@ export class PointageService {
     return {
       invitationTokenHash: link.properties.hashed_token,
       invitationType: 'recovery',
+    };
+  }
+
+  async updateAdministratorRole(
+    authorization: string | undefined,
+    userId: string,
+    input: UpdateAdministratorRoleDto,
+  ) {
+    const identity = await this.auth.requireManager(authorization);
+    if (identity.user.id === userId) {
+      throw new ForbiddenException('ROLE_PROPRE_COMPTE_PROTEGE');
+    }
+
+    const supabase = this.infrastructure.getSupabaseClient();
+    const [{ data: userData, error: userError }, { data: factorData, error: factorError }] = await Promise.all([
+      supabase.auth.admin.getUserById(userId),
+      supabase.auth.admin.mfa.listFactors({ userId }),
+    ]);
+    const user = userData.user;
+    if (userError || factorError) throw new InternalServerErrorException('MISE_A_JOUR_ROLE_ECHOUEE');
+    if (!user || !['owner', 'administrator', 'maintainer'].includes(String(user.app_metadata.inox_admin_role))) {
+      throw new NotFoundException('ADMINISTRATEUR_INTROUVABLE');
+    }
+    if (user.app_metadata.inox_admin_role === 'owner') {
+      throw new ForbiddenException('PROPRIETAIRE_PROTEGE');
+    }
+
+    const previousRole = String(user.app_metadata.inox_admin_role);
+    if (previousRole !== input.role) {
+      const { data: updatedData, error: updateError } = await supabase.auth.admin.updateUserById(userId, {
+        app_metadata: {
+          ...user.app_metadata,
+          inox_admin_role: input.role,
+        },
+      });
+      if (updateError || !updatedData.user) {
+        throw new InternalServerErrorException('MISE_A_JOUR_ROLE_ECHOUEE');
+      }
+      await this.audit(identity.user.id, 'administrator.role_updated', 'administrator', userId, {
+        previousRole,
+        role: input.role,
+      });
+      await this.realtime.publish({ type: 'administrator.updated' });
+    }
+
+    const hasVerifiedFactor = factorData.factors.some((factor) => factor.status === 'verified');
+    return {
+      member: {
+        userId: user.id,
+        email: user.email ?? 'Adresse indisponible',
+        displayName: String(user.app_metadata.inox_admin_display_name || user.email?.split('@')[0] || 'Administrateur INOX'),
+        matricule: String(user.app_metadata.inox_admin_matricule || 'Non attribué'),
+        role: input.role,
+        status: user.app_metadata.inox_admin_active !== true ? 'blocked' : hasVerifiedFactor ? 'active' : 'pending',
+        createdAt: user.created_at,
+      },
     };
   }
 
@@ -414,7 +472,7 @@ export class PointageService {
   }
 
   async createEmployee(authorization: string | undefined, input: CreateEmployeeDto) {
-    const identity = await this.auth.requireAdmin(authorization);
+    const identity = await this.auth.requireManager(authorization);
     const supabase = this.infrastructure.getSupabaseClient();
     const email = input.email.trim().toLowerCase();
     const displayName = input.displayName.trim();
@@ -590,7 +648,7 @@ export class PointageService {
     attendanceId: string,
     input: UpdateAttendanceDto,
   ) {
-    const identity = await this.auth.requireManager(authorization);
+    const identity = await this.auth.requireAdmin(authorization);
     const occurredAt = new Date(input.occurredAt);
     if (Number.isNaN(occurredAt.getTime())) throw new BadRequestException('DATE_POINTAGE_INVALIDE');
 
@@ -623,7 +681,7 @@ export class PointageService {
   }
 
   async deleteAttendance(authorization: string | undefined, attendanceId: string) {
-    const identity = await this.auth.requireManager(authorization);
+    const identity = await this.auth.requireAdmin(authorization);
     const { data: event, error } = await this.infrastructure
       .getSupabaseClient()
       .from('evenements_pointage')
@@ -644,7 +702,7 @@ export class PointageService {
   }
 
   async deleteAttendanceHistory(authorization?: string) {
-    const identity = await this.auth.requireManager(authorization);
+    const identity = await this.auth.requireAdmin(authorization);
     const { data, error } = await this.infrastructure
       .getSupabaseClient()
       .from('evenements_pointage')

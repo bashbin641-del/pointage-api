@@ -13,6 +13,7 @@ import { InfrastructureService } from './infrastructure.service';
 const realtimeChannel = 'pointage:events:v1';
 
 export type RealtimeEventType =
+  | 'administrator.updated'
   | 'attendance.recorded'
   | 'attendance.updated'
   | 'attendance.deleted'
