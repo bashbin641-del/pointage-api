@@ -9,6 +9,7 @@ import {
   UpdateAdministratorRoleDto,
   UpdateAdministratorMatriculeDto,
   UpdateAttendanceDto,
+  UpdateAdministratorStatusDto,
   UpdateEmployeeStatusDto,
   UpdateEmployeeMatriculeDto,
 } from './pointage.dto';
@@ -98,6 +99,23 @@ export class PointageController {
     @Body() input: UpdateAdministratorMatriculeDto,
   ) {
     return this.pointage.updateAdministratorMatricule(authorization, userId, input);
+  }
+
+  @Patch('admin/administrateurs/:id/status')
+  updateAdministratorStatus(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) userId: string,
+    @Body() input: UpdateAdministratorStatusDto,
+  ) {
+    return this.pointage.updateAdministratorStatus(authorization, userId, input);
+  }
+
+  @Delete('admin/administrateurs/:id')
+  deleteAdministrator(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) userId: string,
+  ) {
+    return this.pointage.deleteAdministrator(authorization, userId);
   }
 
   @Get('admin/sites')

@@ -23,6 +23,7 @@ import type {
   ScanDto,
   UpdateAdministratorRoleDto,
   UpdateAdministratorMatriculeDto,
+  UpdateAdministratorStatusDto,
   UpdateAttendanceDto,
   UpdateEmployeeStatusDto,
   UpdateEmployeeMatriculeDto,
@@ -503,6 +504,85 @@ export class PointageService {
         createdAt: user.created_at,
       },
     };
+  }
+
+  async updateAdministratorStatus(
+    authorization: string | undefined,
+    userId: string,
+    input: UpdateAdministratorStatusDto,
+  ) {
+    const identity = await this.auth.requireOwner(authorization);
+    if (identity.user.id === userId) throw new ForbiddenException('COMPTE_PROPRE_PROTEGE');
+
+    const supabase = this.infrastructure.getSupabaseClient();
+    const [{ data: userData, error: userError }, { data: factorData, error: factorError }] = await Promise.all([
+      supabase.auth.admin.getUserById(userId),
+      supabase.auth.admin.mfa.listFactors({ userId }),
+    ]);
+    const user = userData.user;
+    if (userError || factorError) throw new InternalServerErrorException('MISE_A_JOUR_STATUT_ADMINISTRATEUR_ECHOUEE');
+    if (!user) throw new NotFoundException('ADMINISTRATEUR_INTROUVABLE');
+    const role = String(user.app_metadata.inox_admin_role);
+    if (role === 'owner') throw new ForbiddenException('PROPRIETAIRE_PROTEGE');
+    if (role !== 'administrator' && role !== 'maintainer') throw new NotFoundException('ADMINISTRATEUR_INTROUVABLE');
+
+    if (user.app_metadata.inox_admin_active !== input.active) {
+      const { data: updatedData, error: updateError } = await supabase.auth.admin.updateUserById(userId, {
+        ban_duration: input.active ? 'none' : '876000h',
+        app_metadata: {
+          ...user.app_metadata,
+          inox_admin_active: input.active,
+        },
+      });
+      if (updateError || !updatedData.user) {
+        throw new InternalServerErrorException('MISE_A_JOUR_STATUT_ADMINISTRATEUR_ECHOUEE');
+      }
+      await this.audit(identity.user.id, input.active ? 'administrator.unblocked' : 'administrator.blocked', 'administrator', userId, {
+        matricule: String(user.app_metadata.inox_admin_matricule || ''),
+        role,
+      });
+      await this.realtime.publish({ type: 'administrator.updated' });
+    }
+
+    const hasVerifiedFactor = factorData.factors.some((factor) => factor.status === 'verified');
+    return {
+      member: {
+        userId: user.id,
+        email: user.email ?? 'Adresse indisponible',
+        displayName: String(user.app_metadata.inox_admin_display_name || user.email?.split('@')[0] || 'Administrateur INOX'),
+        matricule: String(user.app_metadata.inox_admin_matricule || 'Non attribué'),
+        hiredAt: String(user.app_metadata.inox_admin_hired_at || user.created_at.slice(0, 10)),
+        role: role as 'administrator' | 'maintainer',
+        status: input.active ? hasVerifiedFactor ? 'active' : 'pending' : 'blocked',
+        createdAt: user.created_at,
+      },
+    };
+  }
+
+  async deleteAdministrator(authorization: string | undefined, userId: string) {
+    const identity = await this.auth.requireOwner(authorization);
+    if (identity.user.id === userId) throw new ForbiddenException('COMPTE_PROPRE_PROTEGE');
+
+    const supabase = this.infrastructure.getSupabaseClient();
+    const { data: userData, error: userError } = await supabase.auth.admin.getUserById(userId);
+    const user = userData.user;
+    if (userError) throw new InternalServerErrorException('SUPPRESSION_ADMINISTRATEUR_ECHOUEE');
+    if (!user) throw new NotFoundException('ADMINISTRATEUR_INTROUVABLE');
+    const role = String(user.app_metadata.inox_admin_role);
+    if (role === 'owner') throw new ForbiddenException('PROPRIETAIRE_PROTEGE');
+    if (role !== 'administrator' && role !== 'maintainer') throw new NotFoundException('ADMINISTRATEUR_INTROUVABLE');
+
+    const snapshot = {
+      matricule: String(user.app_metadata.inox_admin_matricule || ''),
+      displayName: String(user.app_metadata.inox_admin_display_name || user.email?.split('@')[0] || 'Administrateur INOX'),
+      role,
+    };
+    const { error } = await supabase.auth.admin.deleteUser(userId);
+    if (error) throw new InternalServerErrorException('SUPPRESSION_ADMINISTRATEUR_ECHOUEE');
+
+    await this.audit(identity.user.id, 'administrator.deleted', 'administrator', userId, snapshot);
+    await this.realtime.publish({ type: 'administrator.deleted' });
+    return { deleted: true, userId };
   }
 
   async listSites(authorization?: string) {

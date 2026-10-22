@@ -86,6 +86,8 @@ describe('public HTTP routes', () => {
     ['POST', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/invitation', undefined],
     ['PATCH', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/role', { role: 'maintainer' }],
     ['PATCH', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/matricule', { hiredAt: '2026-10-21', matricule: 'INOX-ADMIN-2026-0005' }],
+    ['PATCH', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/status', { active: false }],
+    ['DELETE', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000', undefined],
     ['POST', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/invitation', undefined],
     ['POST', '/api/v1/moi/activation', undefined],
     ['DELETE', '/api/v1/admin/sites/00000000-0000-4000-8000-000000000000', undefined],
@@ -237,5 +239,17 @@ describe('account-management permission', () => {
     const auth = new AuthService({} as never);
     jest.spyOn(auth, 'requireAdmin').mockResolvedValue({ user: { app_metadata: { inox_admin_role: 'maintainer' } } } as never);
     await expect(auth.requireManager('Bearer test')).rejects.toThrow('GESTION_ADMIN_REQUISE');
+  });
+
+  it('allows only the owner to block or delete administrative accounts', async () => {
+    const ownerAuth = new AuthService({} as never);
+    jest.spyOn(ownerAuth, 'requireAdmin').mockResolvedValue({ user: { app_metadata: { inox_admin_role: 'owner' } } } as never);
+    await expect(ownerAuth.requireOwner('Bearer test')).resolves.toBeDefined();
+
+    for (const role of ['administrator', 'maintainer']) {
+      const auth = new AuthService({} as never);
+      jest.spyOn(auth, 'requireAdmin').mockResolvedValue({ user: { app_metadata: { inox_admin_role: role } } } as never);
+      await expect(auth.requireOwner('Bearer test')).rejects.toThrow('PROPRIETAIRE_REQUIS');
+    }
   });
 });

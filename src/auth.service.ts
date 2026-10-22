@@ -60,6 +60,14 @@ export class AuthService {
     return identity;
   }
 
+  async requireOwner(authorization?: string): Promise<RequestIdentity> {
+    const identity = await this.requireAdmin(authorization);
+    if (identity.user.app_metadata.inox_admin_role !== 'owner') {
+      throw new ForbiddenException('PROPRIETAIRE_REQUIS');
+    }
+    return identity;
+  }
+
   private bearerToken(authorization?: string): string {
     const [scheme, token] = authorization?.split(' ') ?? [];
     if (scheme?.toLowerCase() !== 'bearer' || !token) {

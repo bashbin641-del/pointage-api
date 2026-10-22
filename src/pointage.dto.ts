@@ -69,6 +69,11 @@ export class UpdateAdministratorRoleDto {
   role!: 'administrator' | 'maintainer';
 }
 
+export class UpdateAdministratorStatusDto {
+  @IsBoolean()
+  active!: boolean;
+}
+
 export class UpdateAdministratorMatriculeDto {
   @IsISO8601({ strict: true })
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
