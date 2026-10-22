@@ -121,6 +121,50 @@ export class RequestEmailChangeDto {
   newEmail!: string;
 }
 
+export class RequestRecoveryEmailDto {
+  @IsEmail()
+  @MaxLength(254)
+  email!: string;
+}
+
+export class VerifyRecoveryCodeDto {
+  @IsUUID()
+  challengeId!: string;
+
+  @IsString()
+  @Matches(/^\d{8}$/)
+  code!: string;
+}
+
+export class UpdatePasswordWithRecoveryDto {
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{43}$/)
+  proofToken!: string;
+
+  @IsString()
+  @MinLength(12)
+  @MaxLength(128)
+  newPassword!: string;
+}
+
+export class RecoveryProofDto {
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{43}$/)
+  proofToken!: string;
+}
+
+export class RequestEmailChangeWithRecoveryDto extends RecoveryProofDto {
+  @IsEmail()
+  @MaxLength(254)
+  newEmail!: string;
+}
+
+export class VerifyEmailChangeWithRecoveryDto extends VerifyRecoveryCodeDto {
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{43}$/)
+  recoveryProofToken!: string;
+}
+
 export class UpdateAttendanceDto {
   @IsISO8601({ strict: true })
   occurredAt!: string;

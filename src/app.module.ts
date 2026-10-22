@@ -4,6 +4,8 @@ import { AuthService } from './auth.service';
 import { PointageController } from './pointage.controller';
 import { PointageService } from './pointage.service';
 import { RealtimeService } from './realtime.service';
+import { RecoveryEmailController } from './recovery-email.controller';
+import { RecoveryEmailService } from './recovery-email.service';
 
 @Controller()
 class RootController {
@@ -36,7 +38,7 @@ class HealthController {
 }
 
 @Module({
-  controllers: [RootController, HealthController, PointageController],
-  providers: [InfrastructureService, AuthService, RealtimeService, PointageService],
+  controllers: [RootController, HealthController, PointageController, RecoveryEmailController],
+  providers: [InfrastructureService, AuthService, RealtimeService, PointageService, RecoveryEmailService],
 })
 export class AppModule {}

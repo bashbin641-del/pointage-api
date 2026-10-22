@@ -9,6 +9,8 @@ import {
   CreateAdministratorDto,
   CreateEmployeeDto,
   RequestEmailChangeDto,
+  RequestRecoveryEmailDto,
+  UpdatePasswordWithRecoveryDto,
   UpdateAdministratorMatriculeDto,
   UpdateEmployeeMatriculeDto,
 } from './pointage.dto';
@@ -52,6 +54,7 @@ describe('public HTTP routes', () => {
     '/api/v1/moi',
     '/api/v1/moi/pointages',
     '/api/v1/moi/changement-email',
+    '/api/v1/moi/adresse-recuperation',
     '/api/v1/admin/tableau-de-bord',
     '/api/v1/admin/administrateurs',
     '/api/v1/admin/sites',
@@ -93,6 +96,16 @@ describe('public HTTP routes', () => {
     ['POST', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/invitation', undefined],
     ['POST', '/api/v1/moi/activation', undefined],
     ['POST', '/api/v1/moi/changement-email', { newEmail: 'nouveau@inox.ci' }],
+    ['POST', '/api/v1/moi/adresse-recuperation/demande', { email: 'secours@example.com' }],
+    ['POST', '/api/v1/moi/adresse-recuperation/verification', { challengeId: '00000000-0000-4000-8000-000000000000', code: '12345678' }],
+    ['POST', '/api/v1/moi/adresse-recuperation/code-mot-de-passe', undefined],
+    ['POST', '/api/v1/moi/adresse-recuperation/code-mot-de-passe/verification', { challengeId: '00000000-0000-4000-8000-000000000000', code: '12345678' }],
+    ['POST', '/api/v1/moi/adresse-recuperation/mot-de-passe', { proofToken: 'a'.repeat(43), newPassword: 'Mot-de-passe-solide-2026' }],
+    ['POST', '/api/v1/moi/adresse-recuperation/changement-email/code-recuperation', undefined],
+    ['POST', '/api/v1/moi/adresse-recuperation/changement-email/code-recuperation/verification', { challengeId: '00000000-0000-4000-8000-000000000000', code: '12345678' }],
+    ['POST', '/api/v1/moi/adresse-recuperation/changement-email/nouvelle-adresse', { proofToken: 'a'.repeat(43), newEmail: 'nouveau@example.com' }],
+    ['POST', '/api/v1/moi/adresse-recuperation/changement-email/nouvelle-adresse/verification', { recoveryProofToken: 'a'.repeat(43), challengeId: '00000000-0000-4000-8000-000000000000', code: '12345678' }],
+    ['POST', '/api/v1/moi/adresse-recuperation/changement-email/appliquer', { proofToken: 'a'.repeat(43) }],
     ['POST', '/api/v1/moi/changement-email/00000000-0000-4000-8000-000000000000/initie', undefined],
     ['POST', '/api/v1/moi/changement-email/00000000-0000-4000-8000-000000000000/annulation', undefined],
     ['POST', '/api/v1/moi/changement-email/00000000-0000-4000-8000-000000000000/renvoye', undefined],
@@ -138,6 +151,24 @@ describe('email change validation', () => {
   it.each(['adresse-invalide', '@inox.ci', `${'a'.repeat(246)}@inox.ci`])('rejects invalid email %s', async (email) => {
     const request = new RequestEmailChangeDto();
     request.newEmail = email;
+    await expect(validate(request)).resolves.not.toHaveLength(0);
+  });
+});
+
+describe('recovery email validation', () => {
+  it('accepts a valid recovery address', async () => {
+    const request = new RequestRecoveryEmailDto();
+    request.email = 'secours@example.com';
+    await expect(validate(request)).resolves.toHaveLength(0);
+  });
+
+  it('requires a strong password and an opaque proof token', async () => {
+    const request = new UpdatePasswordWithRecoveryDto();
+    request.proofToken = 'a'.repeat(43);
+    request.newPassword = 'Mot-de-passe-solide-2026';
+    await expect(validate(request)).resolves.toHaveLength(0);
+
+    request.newPassword = 'court';
     await expect(validate(request)).resolves.not.toHaveLength(0);
   });
 });
