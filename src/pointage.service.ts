@@ -10,6 +10,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
+import type { User } from '@supabase/supabase-js';
 import { AuthService } from './auth.service';
 import { InfrastructureService } from './infrastructure.service';
 import { isMatriculeFor, nextAvailableMatricule, normalizeMatricule, parseHiringDate } from './matricule';
@@ -20,6 +21,7 @@ import type {
   CreateEmployeeDto,
   CreateSiteDto,
   CreateTerminalDto,
+  RequestEmailChangeDto,
   ScanDto,
   UpdateAdministratorRoleDto,
   UpdateAdministratorMatriculeDto,
@@ -64,6 +66,27 @@ type AttendanceTrafficDay = {
   end: string;
 };
 
+type EmailChangeTarget = {
+  userId: string;
+  entityId: string;
+  type: 'employee' | 'administrator';
+  currentEmail: string;
+};
+
+type EmailChangeRequestRow = {
+  id: string;
+  target_user_id: string;
+  target_entity_id: string;
+  target_type: 'employee' | 'administrator';
+  actor_user_id: string | null;
+  old_email: string;
+  new_email: string;
+  status: 'pending_target' | 'awaiting_confirmations' | 'confirmed' | 'expired' | 'cancelled' | 'failed';
+  requested_at: string;
+  expires_at: string;
+  initiated_at: string | null;
+};
+
 @Injectable()
 export class PointageService {
   constructor(
@@ -76,6 +99,115 @@ export class PointageService {
     const identity = await this.auth.requireUser(authorization);
     const employee = await this.employeeForUser(identity.user.id);
     return { employee: this.publicEmployee(employee) };
+  }
+
+  async myEmailChange(authorization?: string) {
+    const identity = await this.auth.requireUser(authorization);
+    const target = await this.emailChangeTargetForUser(identity.user.id, identity.user);
+    const request = await this.activeEmailChangeRequest(target.userId, identity.user.email ?? target.currentEmail);
+    return {
+      currentEmail: identity.user.email ?? target.currentEmail,
+      authPendingEmail: typeof identity.user.new_email === 'string' ? identity.user.new_email : null,
+      request: request ? this.publicEmailChangeRequest(request, identity.user.id) : null,
+    };
+  }
+
+  async requestMyEmailChange(authorization: string | undefined, input: RequestEmailChangeDto) {
+    const identity = await this.auth.requireUser(authorization);
+    const target = await this.emailChangeTargetForUser(identity.user.id, identity.user);
+    await this.enforceEmailChangeRateLimit(identity.user.id);
+    return {
+      request: this.publicEmailChangeRequest(
+        await this.createEmailChangeRequest(target, identity.user.id, input.newEmail),
+        identity.user.id,
+      ),
+    };
+  }
+
+  async markMyEmailChangeInitiated(authorization: string | undefined, requestId: string) {
+    const identity = await this.auth.requireUser(authorization);
+    const target = await this.emailChangeTargetForUser(identity.user.id, identity.user);
+    const supabase = this.infrastructure.getSupabaseClient();
+    const { data, error } = await supabase
+      .from('email_change_requests')
+      .select('*')
+      .eq('id', requestId)
+      .eq('target_user_id', target.userId)
+      .maybeSingle();
+    if (error) throw new InternalServerErrorException('CHANGEMENT_EMAIL_INDISPONIBLE');
+    if (!data) throw new NotFoundException('DEMANDE_EMAIL_INTROUVABLE');
+    const request = data as EmailChangeRequestRow;
+    if (request.status !== 'pending_target') throw new ConflictException('DEMANDE_EMAIL_NON_MODIFIABLE');
+    if (new Date(request.expires_at).getTime() <= Date.now()) {
+      await supabase.from('email_change_requests').update({ status: 'expired', updated_at: new Date().toISOString() }).eq('id', request.id);
+      throw new GoneException('DEMANDE_EMAIL_EXPIREE');
+    }
+    const pendingEmail = typeof identity.user.new_email === 'string' ? identity.user.new_email.trim().toLowerCase() : '';
+    if (pendingEmail !== request.new_email.trim().toLowerCase()) {
+      throw new ConflictException('CONFIRMATIONS_EMAIL_NON_DECLENCHEES');
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 15 * 60_000).toISOString();
+    const { data: updated, error: updateError } = await supabase
+      .from('email_change_requests')
+      .update({ status: 'awaiting_confirmations', initiated_at: now.toISOString(), expires_at: expiresAt, updated_at: now.toISOString() })
+      .eq('id', request.id)
+      .eq('status', 'pending_target')
+      .select('*')
+      .maybeSingle();
+    if (updateError || !updated) throw new InternalServerErrorException('CHANGEMENT_EMAIL_INDISPONIBLE');
+    await this.audit(identity.user.id, `${target.type}.email_change_started`, target.type, target.entityId, {
+      requestId: request.id,
+      oldEmail: this.maskEmail(request.old_email),
+      newEmail: this.maskEmail(request.new_email),
+    });
+    return { request: this.publicEmailChangeRequest(updated as EmailChangeRequestRow, identity.user.id) };
+  }
+
+  async cancelMyEmailChange(authorization: string | undefined, requestId: string) {
+    const identity = await this.auth.requireUser(authorization);
+    const target = await this.emailChangeTargetForUser(identity.user.id, identity.user);
+    const now = new Date().toISOString();
+    const { data, error } = await this.infrastructure
+      .getSupabaseClient()
+      .from('email_change_requests')
+      .update({ status: 'cancelled', cancelled_at: now, updated_at: now })
+      .eq('id', requestId)
+      .eq('target_user_id', target.userId)
+      .eq('status', 'pending_target')
+      .select('*')
+      .maybeSingle();
+    if (error) throw new InternalServerErrorException('ANNULATION_CHANGEMENT_EMAIL_ECHOUEE');
+    if (!data) throw new ConflictException('DEMANDE_EMAIL_NON_ANNULABLE');
+    await this.audit(identity.user.id, `${target.type}.email_change_cancelled`, target.type, target.entityId, {
+      requestId,
+      newEmail: this.maskEmail(String(data.new_email)),
+    });
+    return { cancelled: true, requestId };
+  }
+
+  async markMyEmailChangeResent(authorization: string | undefined, requestId: string) {
+    const identity = await this.auth.requireUser(authorization);
+    const target = await this.emailChangeTargetForUser(identity.user.id, identity.user);
+    await this.enforceEmailChangeRateLimit(identity.user.id);
+    const now = new Date();
+    const { data, error } = await this.infrastructure
+      .getSupabaseClient()
+      .from('email_change_requests')
+      .update({ expires_at: new Date(now.getTime() + 15 * 60_000).toISOString(), updated_at: now.toISOString() })
+      .eq('id', requestId)
+      .eq('target_user_id', target.userId)
+      .eq('status', 'awaiting_confirmations')
+      .select('*')
+      .maybeSingle();
+    if (error) throw new InternalServerErrorException('RENVOI_CONFIRMATIONS_EMAIL_ECHOUE');
+    if (!data) throw new ConflictException('DEMANDE_EMAIL_NON_RENVOYABLE');
+    await this.audit(identity.user.id, `${target.type}.email_change_resent`, target.type, target.entityId, {
+      requestId,
+      newEmail: this.maskEmail(String(data.new_email)),
+    });
+    return { request: this.publicEmailChangeRequest(data as EmailChangeRequestRow, identity.user.id) };
   }
 
   async myAttendance(authorization?: string) {
@@ -218,6 +350,14 @@ export class PointageService {
       const role = user.app_metadata.inox_admin_role;
       return role === 'owner' || role === 'administrator' || role === 'maintainer';
     });
+    const { data: emailRequests, error: emailRequestsError } = await supabase
+      .from('email_change_requests')
+      .select('target_user_id,new_email,status,expires_at')
+      .eq('target_type', 'administrator')
+      .in('status', ['pending_target', 'awaiting_confirmations'])
+      .gt('expires_at', new Date().toISOString());
+    if (emailRequestsError) throw new InternalServerErrorException('ADMINISTRATEURS_INDISPONIBLES');
+    const emailRequestsByUser = new Map((emailRequests ?? []).map((request) => [request.target_user_id, request]));
     const items = await Promise.all(administrators.map(async (user) => {
       const metadata = user.app_metadata;
       const { data: factorData, error: factorError } = await supabase.auth.admin.mfa.listFactors({ userId: user.id });
@@ -232,6 +372,7 @@ export class PointageService {
         role: metadata.inox_admin_role as 'owner' | 'administrator' | 'maintainer',
         status: metadata.inox_admin_active !== true ? 'blocked' : hasVerifiedFactor ? 'active' : 'pending',
         createdAt: user.created_at,
+        emailChange: emailRequestsByUser.get(user.id) ?? null,
       };
     }));
     items.sort((first, second) => first.displayName.localeCompare(second.displayName, 'fr'));
@@ -585,6 +726,33 @@ export class PointageService {
     return { deleted: true, userId };
   }
 
+  async requestAdministratorEmailChange(
+    authorization: string | undefined,
+    userId: string,
+    input: RequestEmailChangeDto,
+  ) {
+    const identity = await this.auth.requireOwner(authorization);
+    if (identity.user.id === userId) throw new ForbiddenException('UTILISEZ_PARAMETRES_PROPRE_COMPTE');
+    const { data, error } = await this.infrastructure.getSupabaseClient().auth.admin.getUserById(userId);
+    const user = data.user;
+    if (error) throw new InternalServerErrorException('VERIFICATION_ADMINISTRATEUR_ECHOUEE');
+    if (!user) throw new NotFoundException('ADMINISTRATEUR_INTROUVABLE');
+    const role = String(user.app_metadata.inox_admin_role);
+    if (role === 'owner') throw new ForbiddenException('PROPRIETAIRE_PROTEGE');
+    if ((role !== 'administrator' && role !== 'maintainer') || user.app_metadata.inox_admin_active !== true) {
+      throw new ForbiddenException('COMPTE_ADMINISTRATEUR_INACTIF');
+    }
+    if (!user.email) throw new BadRequestException('EMAIL_ADMINISTRATEUR_INDISPONIBLE');
+    const request = await this.createEmailChangeRequest({
+      userId: user.id,
+      entityId: user.id,
+      type: 'administrator',
+      currentEmail: user.email,
+    }, identity.user.id, input.newEmail);
+    await this.realtime.publish({ type: 'administrator.updated' });
+    return { request: this.publicEmailChangeRequest(request, identity.user.id) };
+  }
+
   async listSites(authorization?: string) {
     await this.auth.requireAdmin(authorization);
     const { data, error } = await this.infrastructure
@@ -645,15 +813,22 @@ export class PointageService {
   async listEmployees(authorization?: string) {
     await this.auth.requireAdmin(authorization);
     const supabase = this.infrastructure.getSupabaseClient();
-    const [{ data, error }, { data: authUsers, error: authUsersError }] = await Promise.all([
+    const [{ data, error }, { data: authUsers, error: authUsersError }, { data: emailRequests, error: emailRequestsError }] = await Promise.all([
       supabase
       .from('employes')
         .select('id,auth_user_id,matricule,hired_at,display_name,active,created_at,sites(name)')
       .order('display_name'),
       supabase.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+      supabase
+        .from('email_change_requests')
+        .select('target_user_id,new_email,status,expires_at')
+        .eq('target_type', 'employee')
+        .in('status', ['pending_target', 'awaiting_confirmations'])
+        .gt('expires_at', new Date().toISOString()),
     ]);
-    if (error || authUsersError) throw new InternalServerErrorException('EMPLOYES_INDISPONIBLES');
+    if (error || authUsersError || emailRequestsError) throw new InternalServerErrorException('EMPLOYES_INDISPONIBLES');
     const usersById = new Map(authUsers.users.map((user) => [user.id, user]));
+    const emailRequestsByUser = new Map((emailRequests ?? []).map((request) => [request.target_user_id, request]));
     const items = (data ?? []).map(({ auth_user_id: authUserId, ...employee }) => {
       const user = usersById.get(authUserId);
       const pending = user?.app_metadata.inox_employee_invitation_pending === true || !user?.last_sign_in_at;
@@ -661,6 +836,7 @@ export class PointageService {
         ...employee,
         email: user?.email ?? 'Adresse indisponible',
         status: !employee.active ? 'blocked' : pending ? 'pending' : 'active',
+        emailChange: emailRequestsByUser.get(authUserId) ?? null,
       };
     });
     return { items };
@@ -919,6 +1095,34 @@ export class PointageService {
     });
     await this.realtime.publish({ type: 'employee.deleted', employeeId });
     return { deleted: true, employeeId };
+  }
+
+  async requestEmployeeEmailChange(
+    authorization: string | undefined,
+    employeeId: string,
+    input: RequestEmailChangeDto,
+  ) {
+    const identity = await this.auth.requireManager(authorization);
+    const supabase = this.infrastructure.getSupabaseClient();
+    const { data: employee, error } = await supabase
+      .from('employes')
+      .select('id,auth_user_id,active')
+      .eq('id', employeeId)
+      .maybeSingle();
+    if (error) throw new InternalServerErrorException('VERIFICATION_EMPLOYE_ECHOUEE');
+    if (!employee) throw new NotFoundException('EMPLOYE_INTROUVABLE');
+    if (!employee.active) throw new ForbiddenException('COMPTE_EMPLOYE_INACTIF');
+    const { data: userData, error: userError } = await supabase.auth.admin.getUserById(employee.auth_user_id);
+    if (userError) throw new InternalServerErrorException('VERIFICATION_EMPLOYE_ECHOUEE');
+    if (!userData.user?.email) throw new BadRequestException('EMAIL_EMPLOYE_INDISPONIBLE');
+    const request = await this.createEmailChangeRequest({
+      userId: userData.user.id,
+      entityId: employee.id,
+      type: 'employee',
+      currentEmail: userData.user.email,
+    }, identity.user.id, input.newEmail);
+    await this.realtime.publish({ type: 'employee.updated', employeeId: employee.id });
+    return { request: this.publicEmailChangeRequest(request, identity.user.id) };
   }
 
   async listAttendance(authorization?: string) {
@@ -1221,6 +1425,149 @@ export class PointageService {
       target_id: targetId,
       details,
     });
+  }
+
+  private async emailChangeTargetForUser(userId: string, user: User): Promise<EmailChangeTarget> {
+    const role = String(user.app_metadata.inox_admin_role || '');
+    if (role === 'owner' || role === 'administrator' || role === 'maintainer') {
+      if (user.app_metadata.inox_admin_active !== true) throw new ForbiddenException('COMPTE_ADMINISTRATEUR_INACTIF');
+      if (!user.email) throw new BadRequestException('EMAIL_ADMINISTRATEUR_INDISPONIBLE');
+      return { userId, entityId: userId, type: 'administrator', currentEmail: user.email };
+    }
+    const employee = await this.employeeForUser(userId);
+    if (!user.email) throw new BadRequestException('EMAIL_EMPLOYE_INDISPONIBLE');
+    return { userId, entityId: employee.id, type: 'employee', currentEmail: user.email };
+  }
+
+  private async createEmailChangeRequest(
+    target: EmailChangeTarget,
+    actorUserId: string,
+    requestedEmail: string,
+  ): Promise<EmailChangeRequestRow> {
+    const supabase = this.infrastructure.getSupabaseClient();
+    const newEmail = requestedEmail.trim().toLowerCase();
+    const oldEmail = target.currentEmail.trim().toLowerCase();
+    if (newEmail === oldEmail) throw new ConflictException('EMAIL_IDENTIQUE');
+    if (target.type === 'administrator' && !newEmail.endsWith('@inox.ci')) {
+      throw new BadRequestException('EMAIL_ADMINISTRATEUR_INOX_REQUIS');
+    }
+    if (await this.emailBelongsToOtherUser(newEmail, target.userId)) {
+      throw new ConflictException('EMAIL_DEJA_UTILISE');
+    }
+
+    const now = new Date();
+    await supabase
+      .from('email_change_requests')
+      .update({ status: 'cancelled', cancelled_at: now.toISOString(), updated_at: now.toISOString() })
+      .eq('target_user_id', target.userId)
+      .in('status', ['pending_target', 'awaiting_confirmations']);
+
+    const { data, error } = await supabase
+      .from('email_change_requests')
+      .insert({
+        target_user_id: target.userId,
+        target_entity_id: target.entityId,
+        target_type: target.type,
+        actor_user_id: actorUserId,
+        old_email: oldEmail,
+        new_email: newEmail,
+        status: 'pending_target',
+        expires_at: new Date(now.getTime() + 30 * 60_000).toISOString(),
+      })
+      .select('*')
+      .single();
+    if (error?.code === '23505') throw new ConflictException('EMAIL_DEJA_EN_ATTENTE');
+    if (error || !data) throw new InternalServerErrorException('CREATION_DEMANDE_EMAIL_ECHOUEE');
+    await this.audit(actorUserId, `${target.type}.email_change_requested`, target.type, target.entityId, {
+      requestId: data.id,
+      oldEmail: this.maskEmail(oldEmail),
+      newEmail: this.maskEmail(newEmail),
+      assisted: actorUserId !== target.userId,
+    });
+    return data as EmailChangeRequestRow;
+  }
+
+  private async activeEmailChangeRequest(userId: string, currentEmail: string): Promise<EmailChangeRequestRow | null> {
+    const supabase = this.infrastructure.getSupabaseClient();
+    const now = new Date();
+    await supabase
+      .from('email_change_requests')
+      .update({ status: 'expired', updated_at: now.toISOString() })
+      .eq('target_user_id', userId)
+      .in('status', ['pending_target', 'awaiting_confirmations'])
+      .lte('expires_at', now.toISOString());
+    const { data, error } = await supabase
+      .from('email_change_requests')
+      .select('*')
+      .eq('target_user_id', userId)
+      .in('status', ['pending_target', 'awaiting_confirmations'])
+      .order('requested_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new InternalServerErrorException('CHANGEMENT_EMAIL_INDISPONIBLE');
+    if (!data) return null;
+    const request = data as EmailChangeRequestRow;
+    if (request.status === 'awaiting_confirmations' && currentEmail.trim().toLowerCase() === request.new_email.trim().toLowerCase()) {
+      const confirmedAt = now.toISOString();
+      const { data: confirmed, error: confirmationError } = await supabase
+        .from('email_change_requests')
+        .update({ status: 'confirmed', confirmed_at: confirmedAt, updated_at: confirmedAt })
+        .eq('id', request.id)
+        .eq('status', 'awaiting_confirmations')
+        .select('*')
+        .maybeSingle();
+      if (confirmationError) throw new InternalServerErrorException('CHANGEMENT_EMAIL_INDISPONIBLE');
+      if (confirmed) {
+        await this.audit(userId, `${request.target_type}.email_change_confirmed`, request.target_type, request.target_entity_id, {
+          requestId: request.id,
+          oldEmail: this.maskEmail(request.old_email),
+          newEmail: this.maskEmail(request.new_email),
+        });
+      }
+      return null;
+    }
+    return request;
+  }
+
+  private publicEmailChangeRequest(request: EmailChangeRequestRow, currentUserId: string) {
+    return {
+      id: request.id,
+      newEmail: request.new_email,
+      status: request.status,
+      expiresAt: request.expires_at,
+      assisted: request.actor_user_id !== currentUserId,
+      canCancel: request.status === 'pending_target',
+    };
+  }
+
+  private async emailBelongsToOtherUser(email: string, targetUserId: string): Promise<boolean> {
+    const supabase = this.infrastructure.getSupabaseClient();
+    for (let page = 1; page <= 20; page += 1) {
+      const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 1000 });
+      if (error) throw new InternalServerErrorException('VERIFICATION_EMAIL_ECHOUEE');
+      if (data.users.some((user) => user.id !== targetUserId && user.email?.trim().toLowerCase() === email)) return true;
+      if (data.users.length < 1000) return false;
+    }
+    throw new InternalServerErrorException('VERIFICATION_EMAIL_ECHOUEE');
+  }
+
+  private async enforceEmailChangeRateLimit(userId: string) {
+    try {
+      const redis = await this.infrastructure.getRedisClient();
+      const key = `pointage:email-change:${userId}`;
+      const attempts = await redis.incr(key);
+      if (attempts === 1) await redis.expire(key, 15 * 60);
+      if (attempts > 5) throw new ForbiddenException('TROP_DE_DEMANDES_EMAIL');
+    } catch (error) {
+      if (error instanceof ForbiddenException) throw error;
+      throw new ServiceUnavailableException('PROTECTION_CHANGEMENT_EMAIL_INDISPONIBLE');
+    }
+  }
+
+  private maskEmail(email: string) {
+    const [local, domain] = email.split('@');
+    if (!domain) return 'adresse invalide';
+    return `${local.slice(0, 2)}***@${domain}`;
   }
 
   private throwAttendanceWriteError(error: { code?: string; message?: string } | null, fallback: string) {

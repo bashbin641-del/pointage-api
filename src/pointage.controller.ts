@@ -6,6 +6,7 @@ import {
   CreateSiteDto,
   CreateTerminalDto,
   ScanDto,
+  RequestEmailChangeDto,
   UpdateAdministratorRoleDto,
   UpdateAdministratorMatriculeDto,
   UpdateAttendanceDto,
@@ -37,6 +38,43 @@ export class PointageController {
   @Post('moi/activation')
   confirmEmployeeActivation(@Headers('authorization') authorization?: string) {
     return this.pointage.confirmEmployeeActivation(authorization);
+  }
+
+  @Get('moi/changement-email')
+  myEmailChange(@Headers('authorization') authorization?: string) {
+    return this.pointage.myEmailChange(authorization);
+  }
+
+  @Post('moi/changement-email')
+  requestMyEmailChange(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() input: RequestEmailChangeDto,
+  ) {
+    return this.pointage.requestMyEmailChange(authorization, input);
+  }
+
+  @Post('moi/changement-email/:id/initie')
+  markMyEmailChangeInitiated(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) requestId: string,
+  ) {
+    return this.pointage.markMyEmailChangeInitiated(authorization, requestId);
+  }
+
+  @Post('moi/changement-email/:id/annulation')
+  cancelMyEmailChange(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) requestId: string,
+  ) {
+    return this.pointage.cancelMyEmailChange(authorization, requestId);
+  }
+
+  @Post('moi/changement-email/:id/renvoye')
+  markMyEmailChangeResent(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) requestId: string,
+  ) {
+    return this.pointage.markMyEmailChangeResent(authorization, requestId);
   }
 
   @Sse('events/moi')
@@ -118,6 +156,15 @@ export class PointageController {
     return this.pointage.deleteAdministrator(authorization, userId);
   }
 
+  @Post('admin/administrateurs/:id/changement-email')
+  requestAdministratorEmailChange(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) userId: string,
+    @Body() input: RequestEmailChangeDto,
+  ) {
+    return this.pointage.requestAdministratorEmailChange(authorization, userId, input);
+  }
+
   @Get('admin/sites')
   listSites(@Headers('authorization') authorization?: string) {
     return this.pointage.listSites(authorization);
@@ -178,6 +225,15 @@ export class PointageController {
     @Param('id', new ParseUUIDPipe()) employeeId: string,
   ) {
     return this.pointage.deleteEmployee(authorization, employeeId);
+  }
+
+  @Post('admin/employes/:id/changement-email')
+  requestEmployeeEmailChange(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id', new ParseUUIDPipe()) employeeId: string,
+    @Body() input: RequestEmailChangeDto,
+  ) {
+    return this.pointage.requestEmployeeEmailChange(authorization, employeeId, input);
   }
 
   @Get('admin/presences')

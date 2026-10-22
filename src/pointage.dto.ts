@@ -115,6 +115,12 @@ export class UpdateEmployeeMatriculeDto {
   matricule!: string;
 }
 
+export class RequestEmailChangeDto {
+  @IsEmail()
+  @MaxLength(254)
+  newEmail!: string;
+}
+
 export class UpdateAttendanceDto {
   @IsISO8601({ strict: true })
   occurredAt!: string;

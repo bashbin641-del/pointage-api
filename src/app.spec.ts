@@ -8,6 +8,7 @@ import { nextAvailableMatricule } from './matricule';
 import {
   CreateAdministratorDto,
   CreateEmployeeDto,
+  RequestEmailChangeDto,
   UpdateAdministratorMatriculeDto,
   UpdateEmployeeMatriculeDto,
 } from './pointage.dto';
@@ -50,6 +51,7 @@ describe('public HTTP routes', () => {
   it.each([
     '/api/v1/moi',
     '/api/v1/moi/pointages',
+    '/api/v1/moi/changement-email',
     '/api/v1/admin/tableau-de-bord',
     '/api/v1/admin/administrateurs',
     '/api/v1/admin/sites',
@@ -90,6 +92,12 @@ describe('public HTTP routes', () => {
     ['DELETE', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000', undefined],
     ['POST', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/invitation', undefined],
     ['POST', '/api/v1/moi/activation', undefined],
+    ['POST', '/api/v1/moi/changement-email', { newEmail: 'nouveau@inox.ci' }],
+    ['POST', '/api/v1/moi/changement-email/00000000-0000-4000-8000-000000000000/initie', undefined],
+    ['POST', '/api/v1/moi/changement-email/00000000-0000-4000-8000-000000000000/annulation', undefined],
+    ['POST', '/api/v1/moi/changement-email/00000000-0000-4000-8000-000000000000/renvoye', undefined],
+    ['POST', '/api/v1/admin/administrateurs/00000000-0000-4000-8000-000000000000/changement-email', { newEmail: 'nouveau@inox.ci' }],
+    ['POST', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/changement-email', { newEmail: 'nouveau@example.com' }],
     ['DELETE', '/api/v1/admin/sites/00000000-0000-4000-8000-000000000000', undefined],
     ['PATCH', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/status', { active: false }],
     ['PATCH', '/api/v1/admin/employes/00000000-0000-4000-8000-000000000000/matricule', { hiredAt: '2026-10-21', matricule: 'INOX-EMP-2026-0002' }],
@@ -117,6 +125,20 @@ describe('public HTTP routes', () => {
       }),
     });
     expect(response.status).toBe(400);
+  });
+});
+
+describe('email change validation', () => {
+  it('accepts a normalized valid email address', async () => {
+    const request = new RequestEmailChangeDto();
+    request.newEmail = 'nouveau@inox.ci';
+    await expect(validate(request)).resolves.toHaveLength(0);
+  });
+
+  it.each(['adresse-invalide', '@inox.ci', `${'a'.repeat(246)}@inox.ci`])('rejects invalid email %s', async (email) => {
+    const request = new RequestEmailChangeDto();
+    request.newEmail = email;
+    await expect(validate(request)).resolves.not.toHaveLength(0);
   });
 });
 
